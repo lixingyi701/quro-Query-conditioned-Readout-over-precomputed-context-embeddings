@@ -448,7 +448,7 @@ $$
 将每条 $(q,d,a)$ 转换为 $(q,\mathbf Z_d,a)$：
 
 $$
-\mathbf E=r_θ(q,\mathbf Z_d),qquad
+\mathbf E=r_{\theta}(q,\mathbf Z_d),\qquad
 a\sim g(\mathbf E,q).
 $$
 
@@ -466,7 +466,7 @@ $$
 $$
 
 $$
-\text{QuRO}: d\rightarrow\mathbf Z_d,quad
+\text{QuRO}: d\rightarrow\mathbf Z_d,\quad
 q+\mathbf Z_d\rightarrow\mathbf E.
 $$
 
