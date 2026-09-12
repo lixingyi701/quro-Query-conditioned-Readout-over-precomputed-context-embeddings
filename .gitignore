@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pt
+*.pth
+*.safetensors
+runs/
+cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.env
+data/rag/

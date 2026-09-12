@@ -1,0 +1,9 @@
+# tiny 预设只需要 torch
+torch>=2.0
+
+# 真编码器 / 真 generator（qwen3emb、qwen7b 预设）才需要
+transformers>=4.40
+accelerate>=0.30
+
+# 只有加 --lora_doc_encoder 时才需要
+peft>=0.10
