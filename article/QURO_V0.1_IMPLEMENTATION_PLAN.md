@@ -549,7 +549,16 @@ TriviaQA 全量 2000 条、B=8、D0、同一 decoder：
 ### 10.7.3 COCOM v1 的两个坑
 
 - **m 不是定值**。`modeling_cocom.py:276` 用 padding 后的 batch 长度算 `num_mem_tokens`，m 会随 batch 里最长的文档变化——定长缓存直接失效，ξ_off 也失去意义。必须自己把文档固定到 128 token。
-- **mem token 的位置相反**。PISCO 追加在文档之后（`modelling_pisco.py:393`），COCOM v1 前置在文档之前（`modeling_cocom.py:283`）。**因果模型下这不是格式问题**：前置的 mem token 看不到后面的文档，隐状态对所有输入都相同。`probe_mem_side()` 用「不同文档是否压出不同 latent」实测判定，**不靠读代码下结论**。
+- **mem token 的位置相反，而且代码里的写法是错的**。PISCO 追加在文档之后（`modelling_pisco.py:393`），COCOM v1 前置在文档之前（`modeling_cocom.py:283`）。**因果模型下这不是格式问题**：前置的 mem token 排在文档之前，因果掩码让它看不到后面的内容。`probe_mem_side()` 实测：
+
+  | 布局 | 文档间 latent 距离 |
+  |---|---:|
+  | prepend（`modeling_cocom.py` 的写法） | **0.0** |
+  | append（PISCO 的写法） | 1102.3 |
+
+  **prepend 下所有文档压出完全相同的 latent。** 若照抄代码建缓存，那 69GB 全是同一个常数向量，实验会得出「m=32 也没有收益」——一个完全错误且极难察觉的结论（缓存本身不含 NaN、形状也对，所有既有校验都会通过）。**判定必须来自实测，不能来自读代码。**
+
+- **14.5GB 的 3 分片 checkpoint 触发 meta device 加载**，`resize_token_embeddings` 的默认 `mean_resizing` 会对 meta tensor 求协方差而崩（`Tensor.item() cannot be called on meta tensors`）。PISCO 只有 0.69GB 不走这条路，所以之前没暴露。vendored 文件里改成 `mean_resizing=False`——那些 embedding 随后会被 checkpoint 权重覆盖，初始化方式无关紧要。
 
 ### 10.7.4 工程记录
 

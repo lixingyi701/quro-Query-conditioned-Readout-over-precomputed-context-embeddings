@@ -175,7 +175,13 @@ class COCOM(PreTrainedModel):
             self.decoder_tokenizer.pad_token_id = self.decoder_tokenizer.bos_token_id
 
         # resize the tokenizer embedding
-        self.decoder.resize_token_embeddings(len(self.decoder_tokenizer))
+        # mean_resizing=False: COCOM v1 is a 3-shard 14.5 GB checkpoint, so
+        # transformers builds it on the meta device and the default mean-resizing
+        # path tries to take a covariance of meta tensors ("Tensor.item() cannot be
+        # called on meta tensors").  The initialisation is irrelevant here anyway --
+        # the <MEM>/<AE>/<ENC>/<SEP> embeddings are overwritten by the checkpoint
+        # immediately afterwards.  [QuRO patch to the vendored file]
+        self.decoder.resize_token_embeddings(len(self.decoder_tokenizer), mean_resizing=False)
         self.decoder.generation_config.top_p=None
         self.decoder.generation_config.temperature=None
         self.compr_model_name = cfg.compr_model_name
