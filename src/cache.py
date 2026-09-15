@@ -1,9 +1,23 @@
-"""Disk-backed, sharded latent cache used by QuRO's offline/online boundary.
+"""Disk-backed latent cache: QuRO's offline/online boundary.
 
 The cache stores one fixed-size tensor ``(m, h)`` per document.  It deliberately
 does not know how the tensor was produced: PISCO, COCOM, or a local prototype can
 all feed the same writer.  The online readout therefore depends only on this
 stable interface rather than on a compressor implementation.
+
+Two storage layouts exist, and the difference matters at scale:
+
+``shards``
+    Numbered ``.pt`` files, written incrementally and resumable.  Fine for
+    building, hopeless for training: batches are shuffled, so a single batch of 4
+    queries at K=10 touches up to 40 documents scattered across every shard, and
+    an LRU of whole 537 MB shards thrashes instead of caching.
+
+``memmap``
+    One contiguous ``latents.bin`` read through ``numpy.memmap``.  Random access
+    costs one page fault, and the OS page cache is *shared between processes*, so
+    four training arms running in parallel occupy 17 GB in total rather than 17 GB
+    each.  Build with shards, then pack with ``scripts/pack_latent_cache.py``.
 """
 
 from __future__ import annotations
@@ -14,7 +28,10 @@ from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
+
+LATENT_BIN = "latents.bin"
 
 
 CACHE_FORMAT_VERSION = 1
@@ -184,9 +201,25 @@ class LatentCache:
             checkpoint=self.manifest.get("checkpoint"),
         )
         self.documents: Dict[str, Dict[str, int]] = self.manifest["documents"]
-        self.shards: List[Dict[str, object]] = self.manifest["shards"]
+        self.shards: List[Dict[str, object]] = self.manifest.get("shards", [])
         self.max_open_shards = max(1, int(max_open_shards))
         self._loaded: "OrderedDict[int, Dict[str, object]]" = OrderedDict()
+
+        # Prefer the packed layout when it exists; shuffled training over sharded
+        # .pt files degenerates into reloading half-gigabyte shards per batch.
+        self.memmap = None
+        bin_path = os.path.join(self.root, LATENT_BIN)
+        if self.manifest.get("storage") == "memmap" and os.path.exists(bin_path):
+            self.memmap = np.memmap(
+                bin_path, dtype=np.dtype(self.metadata.dtype), mode="r",
+                shape=(len(self.documents), self.metadata.latent_size,
+                       self.metadata.hidden_size))
+        elif not self.shards:
+            raise FileNotFoundError(f"{self.root} has neither shards nor {LATENT_BIN}")
+
+    @property
+    def storage(self) -> str:
+        return "memmap" if self.memmap is not None else "shards"
 
     def __contains__(self, doc_id: str) -> bool:
         return str(doc_id) in self.documents
@@ -206,14 +239,19 @@ class LatentCache:
             self._loaded.popitem(last=False)
         return value
 
-    def get(self, doc_id: str) -> Tuple[torch.Tensor, int]:
+    def _locate(self, doc_id: str) -> Dict[str, int]:
         key = str(doc_id)
         if key not in self.documents:
             raise KeyError(f"document is absent from latent cache: {key}")
-        loc = self.documents[key]
-        shard = self._load_shard(int(loc["shard"]))
-        row = int(loc["row"])
-        return shard["latents"][row], int(loc.get("source_token_count", 0))
+        return self.documents[key]
+
+    def get(self, doc_id: str) -> Tuple[torch.Tensor, int]:
+        loc = self._locate(doc_id)
+        if self.memmap is not None:
+            value = torch.from_numpy(np.asarray(self.memmap[int(loc["index"])]))
+        else:
+            value = self._load_shard(int(loc["shard"]))["latents"][int(loc["row"])]
+        return value, int(loc.get("source_token_count", 0))
 
     def get_many(
         self,
@@ -236,12 +274,30 @@ class LatentCache:
         latents = torch.zeros(batch_size, k, m, h, dtype=out_dtype)
         doc_mask = torch.zeros(batch_size, k, dtype=torch.bool)
         token_counts = torch.zeros(batch_size, k, dtype=torch.long)
-        for i, doc_ids in enumerate(rows):
-            for j, doc_id in enumerate(doc_ids):
-                value, n_tokens = self.get(doc_id)
-                latents[i, j] = value.to(dtype=out_dtype)
-                doc_mask[i, j] = True
-                token_counts[i, j] = n_tokens
+
+        if self.memmap is not None:
+            # One gather for the whole batch: fancy indexing keeps the page-fault
+            # count proportional to documents touched, not to Python overhead.
+            slots, indices = [], []
+            for i, doc_ids in enumerate(rows):
+                for j, doc_id in enumerate(doc_ids):
+                    loc = self._locate(doc_id)
+                    slots.append((i, j))
+                    indices.append(int(loc["index"]))
+                    doc_mask[i, j] = True
+                    token_counts[i, j] = int(loc.get("source_token_count", 0))
+            if indices:
+                gathered = torch.from_numpy(
+                    np.ascontiguousarray(self.memmap[np.asarray(indices)])).to(out_dtype)
+                for slot, (i, j) in enumerate(slots):
+                    latents[i, j] = gathered[slot]
+        else:
+            for i, doc_ids in enumerate(rows):
+                for j, doc_id in enumerate(doc_ids):
+                    value, n_tokens = self.get(doc_id)
+                    latents[i, j] = value.to(dtype=out_dtype)
+                    doc_mask[i, j] = True
+                    token_counts[i, j] = n_tokens
         if device is not None:
             latents = latents.to(device)
             doc_mask = doc_mask.to(device)
