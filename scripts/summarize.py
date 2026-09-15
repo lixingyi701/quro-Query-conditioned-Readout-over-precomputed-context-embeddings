@@ -70,6 +70,17 @@ def verdict(runs, mode="D0", budget=8, split="dev"):
     if c is None or a is None:
         print("  arms C and A are both required; run stage 1 first")
         return False
+
+    # Gate 0: half of the SeleCom-synthesised questions are yes/no, where a
+    # constant "Yes" already scores ~13% EM.  Nothing below that floor can be
+    # evidence of anything, so check it before comparing arms.
+    floor = get(runs, f"gonogo_C_{mode}", key, "constant_baseline_em")
+    if floor is None:
+        floor = get(runs, "gonogo_C_qdrop", key, "constant_baseline_em")
+    if floor is not None:
+        checks.append((f"C = {c:.2%} vs constant-answer floor {floor:.2%} "
+                       f"({c - floor:+.2%})", c - floor > 0))
+
     checks.append((f"C - A = {c - a:+.2%} (need >= {MIN_C_MINUS_A_EM:.0%})",
                    c - a >= MIN_C_MINUS_A_EM))
     if s is not None:
@@ -120,7 +131,9 @@ def main():
     ap.add_argument("--runs", default=paths.RUNS_DIR)
     ap.add_argument("--budget", type=int, default=8)
     ap.add_argument("--mode", default="D0")
-    ap.add_argument("--split", default="dev")
+    # TriviaQA first: its constant-answer floor is 0.35% versus 6.8% on the
+    # in-domain SeleCom dev split, so it is the split that can actually decide.
+    ap.add_argument("--split", default="trivia")
     args = ap.parse_args()
 
     runs = load_runs(args.runs)

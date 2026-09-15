@@ -195,6 +195,14 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     if attention:
         torch.save(attention, dump_attn_path)
     aggregate = metrics.aggregate(rows)
+    # Always carry the "ignore the input and answer the same thing every time"
+    # floor alongside the score, so a number can never be read without it.
+    floor = metrics.constant_baseline([r["golds"] for r in rows])
+    aggregate["constant_baseline_em"] = floor["em"]
+    aggregate["constant_baseline_f1"] = floor["f1"]
+    aggregate["constant_baseline_substring"] = floor["substring"]
+    aggregate["constant_baseline_answer"] = floor["answer"]
+    aggregate["em_above_constant"] = aggregate["em"] - floor["em"]
     aggregate["source_tokens"] = source_tokens
     aggregate["readout_tokens"] = readout_tokens
     # Generator-side effective compression: the only ratio that makes two systems
@@ -237,7 +245,10 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                 with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
                     json.dump(rows[:500], f, ensure_ascii=False, indent=2)
                 print(f"[eval] {key}: EM={aggregate['em']:.2%} F1={aggregate['f1']:.3f} "
-                      f"sub={aggregate['substring']:.2%} xi_eff={aggregate['xi_eff']}")
+                      f"sub={aggregate['substring']:.2%} "
+                      f"(constant floor EM={aggregate['constant_baseline_em']:.2%} "
+                      f"-> {aggregate['em_above_constant']:+.2%}) "
+                      f"xi_eff={aggregate['xi_eff']}")
     model.decoder_input_mode = original_mode
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)

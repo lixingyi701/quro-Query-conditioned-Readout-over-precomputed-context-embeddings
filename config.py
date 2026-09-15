@@ -301,7 +301,12 @@ def pisco_gonogo_config() -> Config:
     root = os.path.join(paths.DATA_DIR, "gonogo")
     cfg.data = DataConfig(
         train_file=os.path.join(root, "train.jsonl"),
-        eval_files={"dev": os.path.join(root, "dev.jsonl")},
+        # ``dev`` is in-domain but 43% yes/no, where a constant "Yes" already
+        # scores 6.8% EM -- too weak to decide anything on its own.  TriviaQA has
+        # a 0.35% constant floor and two-word factoid answers with alias lists,
+        # so it is the discriminative split and the one to read first.
+        eval_files={"dev": os.path.join(root, "dev.jsonl"),
+                    "trivia": os.path.join(paths.DATA_DIR, "trivia/queries.jsonl")},
         cache_dir=os.path.join(paths.CACHE_ROOT, "gonogo-pisco-r16"),
         max_docs=10)
     cfg.train.steps = 3000

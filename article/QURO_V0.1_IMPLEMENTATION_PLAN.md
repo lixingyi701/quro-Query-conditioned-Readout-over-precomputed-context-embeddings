@@ -284,6 +284,87 @@ QURO_ROOT=/data02/quro
 
 ---
 
+## 10.5 实施过程中的实测发现（2026-09-15）
+
+以下都是跑出来的数，不是推断。它们改变了本轮的评测集选择与数据构造。
+
+### 10.5.1 PISCO 的压缩不跨 batch 确定
+
+| 条件 | 结果 |
+|---|---|
+| 同一 batch 跑两次 | 逐位相同 |
+| batch=16 vs batch=64（同一篇文档） | max\|Δ\| = 0.66，mean\|Δ\| = 0.024，cosine ≥ 0.9997 |
+| batch=1 vs batch=16 | max\|Δ\| = 0.31 |
+
+bf16 下不同 batch 形状走不同 kernel、累加顺序不同。两个后果：
+
+- **PISCO 基线必须读同一份缓存**，不能在线重算，否则混进一个不受控的干扰变量（每份缓存都带 batch 组成的指纹）。
+- 7B bf16 + 贪心解码是混沌系统，**单条样本的系统间对比是噪声**，只看聚合指标。
+
+`scripts/check_pisco_equivalence.py` 实测 81.2% 逐字相同、substring 精度完全相等（21.88% vs 21.88%），这已是可达上限，判为通过。
+
+### 10.5.2 截断损失 32.7%
+
+```
+mean fed tokens/doc 120.9  (untruncated 179.6,  truncation loss 32.7%)
+xi_off = fed_tokens / m = 15.12x
+```
+
+PISCO model card 明写「documents of size up to 128 tokens」「cropped to about 128 tokens」，不是隐瞒；是 **SeleCom 的文档（180 token）超出了 PISCO 的设计点（~128）**，两边 passage 切分口径不同。ξ_off 必须按 fed tokens 算 15.1×，按原文长度算会虚报成 22.5×。缓存 manifest 两个数都记。
+
+顺带一个可写进论文的观察：`n_mem_tokens = doc_max_length // compr_rate` 与实际输入长度无关，**喂多长的文档直接改变真实 ξ_off**（128 token → 16×，256 token → 32×）。前人报 rate 时不同时报 passage 长度，这个数没有意义，印证设计文档 §3 规则 4。
+
+### 10.5.3 ⭐ SeleCom 数据的评测地板（改变了主评测集选择）
+
+| 数据集 | yes/no 占比 | gold 中位词数 | 常量预测地板 EM |
+|---|---:|---:|---:|
+| SeleCom gonogo train | 42.3% | 6 | 6.60% |
+| SeleCom gonogo dev | 43.2% | 6 | 6.75% |
+| **TriviaQA eval** | **0.0%** | **2** | **0.35%** |
+
+SeleCom stage1/2 是 LLM 合成问答，四成是是非题，gold 还是完整句子（"Yes, it officially ended plural marriage in Utah."）。常量输出 `"Yes"` 就能拿 EM 6.6%。
+
+**决定**：TriviaQA 作为**主评测集**，SeleCom dev 只作 in-domain 参考。`metrics.constant_baseline()` 把这个地板计算进每一行结果（`constant_baseline_em` / `em_above_constant`），summarize 的 go 判据加一条 Gate 0：**C 必须先高于常量地板**，否则后面所有比较都没有意义。
+
+### 10.5.4 ⭐ 80% 的训练数据没有"选择"可做（改变了数据构造）
+
+stage1 是单文档：K=1、m=8，所以 `K·m = 8` 个 latent，而 B=8 —— **8 选 8，压缩比 1:1，readout 只是线性重组**，query 条件无处发挥。只有 stage2 的 K=10（80 → 8，10:1）才是真选择问题。而 stage1 占 80%。
+
+对应的实测症状（smoke，150 步，qdrop=0.5）：
+
+| | 未训练 | 150 步后 |
+|---|---:|---:|
+| query 敏感度 `‖E(q)−E(q′)‖/‖E(q)‖` | 0.030 | **0.019 ↓** |
+| 注意力熵 / log(K·m) | 99.85% | **83.2% ↓** |
+
+注意力变尖锐但 query 依赖性反而下降 —— 学到的是**与 query 无关的显著性模式**，即 arm C 自发塌缩成 arm A。
+
+**受控验证**（400 步，同样的数据行，唯一差异是有无干扰文档）：
+
+| 400 步 | query 敏感度（中位） | 注意力 TVD | 端到端 EM vs 常量地板 |
+|---|---:|---:|---:|
+| 无干扰（K=1，8 latent → B=8，1:1） | **0.007** | 0.006 | 14.06% vs 14.06% = **+0.00%** |
+| 有干扰（K=5，40 latent → B=8，5:1） | **0.534** | 0.442 | 9.38% vs 4.69% = **+4.69%** |
+
+76 倍差距，步数已控制。**这给出一个可证伪的预测：query 条件读出的收益应随 K·m/B 单调增长**，而 K·m/B = 1 时必然为零。主实验应当直接扫这条曲线——它比单点的 A-vs-C 差值更有说服力，因为它预言了失败点的位置。
+
+**修正**：`prepare_selecom_data.py --distractors 4`，给单文档行掺 4 篇同语料随机文档，gold 放在**随机 rank**（不是 rank 0，否则 readout 学会"永远读第一篇"，而 `add_document_source` 的 rank embedding 会助长这一点）。`mean_docs_per_query` 2.8 → 6.0，全部训练数据变成 5:1 及以上的真实选择问题。干扰文档取自同一语料，**corpus 不变，缓存不必重建**。这同时正好对齐设计文档 §6.3 想测的「带噪 top-k」场景。评测集同样处理（`corpus_from_queries.py --distractors`），并在结果中显式标注这是 noisy top-k 设定而非原版 TriviaQA RAG。
+
+### 10.5.5 「未训练也有效果」是误读
+
+150 步时 D0 的 EM=9.38%，**低于**常量地板 12.73%（smoke dev）。之前把它当作"链路在学"的证据是错的。真实原因分三层：
+
+1. 指标地板；
+2. 系统里未训练的只有 readout —— decoder 是 PISCO 已训好的 adapter，D0 下还有明文 query，Mistral-7B 本身有大量参数化知识，generator LoRA 的 41.94M 也在训；
+3. 初始化时 readout 按设计就是恒等操作（注意力熵 = 均匀的 99.85%），`E ≈ mean(Z)` 复制 B 份，是主题级平均而非证据选择。
+
+### 10.5.6 两个已修的实现 bug
+
+- **残差惩罚在初始化点梯度为 inf**：`delta.pow(2).mean().sqrt()` 配零初始化的 `out_proj`，`delta` 恰为 0，`sqrt` 在 0 处导数无穷 → 全部梯度 NaN。零初始化与 RMS 形式互相冲突。改用均方（不开根号），并加了「初始化点全部梯度有限」的断言测试。
+- **LM 逃过了 train/eval 模式切换**：为了不进 `state_dict` 把 LM 存在 list 里，导致 `nn.Module` 的模式切换管不到它；PISCO 的 adapter 用 `lora_dropout=0.1`，评测时 dropout 仍在生效，贪心解码不确定。`QuROModel.train()` 现在显式驱动。
+
+---
+
 ## 10. 本轮明确不做
 
 - ξ_off 扫描（需另外下载 3 个 14.5GB 的 COCOM checkpoint，等 go/no-go 过了再做）。

@@ -58,3 +58,26 @@ def aggregate(rows: List[Dict]) -> Dict[str, float]:
     out = {k: sum(r[k] for r in rows) / len(rows) for k in keys}
     out["n"] = len(rows)
     return out
+
+
+def constant_baseline(all_golds: Sequence[Sequence[str]]) -> Dict[str, float]:
+    """Best score obtainable by ignoring the input and always saying the same thing.
+
+    This floor must appear next to every result.  On LLM-synthesised QA sets half
+    the questions can be yes/no, and a constant ``"Yes"`` then scores ~13% EM --
+    enough to make an untrained system look like it is working.  Any claimed
+    improvement has to clear this line before it means anything.
+    """
+    counts = Counter()
+    for golds in all_golds:
+        for gold in golds:
+            counts[normalize_answer(str(gold))] += 1
+    best = {"substring": 0.0, "em": 0.0, "f1": 0.0, "answer": ""}
+    for candidate, _ in counts.most_common(20):
+        if not candidate:
+            continue
+        scored = aggregate([score(candidate, golds) for golds in all_golds])
+        if scored["em"] > best["em"] or (scored["em"] == best["em"]
+                                         and scored["f1"] > best["f1"]):
+            best = {**scored, "answer": candidate}
+    return best
