@@ -36,7 +36,7 @@ import config as config_module
 from config import get_config, parse_eval_files
 from src import metrics
 from src.cache import LatentCache
-from src.data import QuROCollator, QuRODataset, move_to_device
+from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
 from src.model import build_model
 
 
@@ -94,11 +94,17 @@ def build_args():
     ap.add_argument("--without_document_source", action="store_true")
     ap.add_argument("--adaptive_budget", action="store_true")
 
-    ap.add_argument("--decoder_input_mode", choices=["D0", "D1", "D2", "D3"], default=None)
+    ap.add_argument("--decoder_input_mode",
+                    choices=["D0", "D1", "D2", "D3", "AG", "RG"], default=None)
     ap.add_argument("--query_text_dropout", type=float, default=None)
     ap.add_argument("--generator_lora_init", choices=["pisco", "random", "frozen"], default=None)
 
     ap.add_argument("--cache_dir", default=None)
+    ap.add_argument("--corpus", nargs="*", default=None,
+                    help="corpus.jsonl files; required only by the uncompressed RG baseline")
+    ap.add_argument("--disable_generator_adapter", action="store_true",
+                    help="run plain Mistral without PISCO's compression adapter -- "
+                         "the honest backbone for the AG/RG rows")
     ap.add_argument("--train_file", default=None)
     ap.add_argument("--eval_files", default=None)
     ap.add_argument("--max_docs", type=int, default=None)
@@ -161,7 +167,7 @@ def apply_overrides(cfg, args):
 
 
 def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
-                  doc_control=False):
+                  doc_control=False, corpus=None):
     train_set = QuRODataset(cfg.data.train_file, tokenizer, cfg.data,
                             query_tokenizer=query_tokenizer)
     train_loader = DataLoader(train_set, batch_size=cfg.train.batch_size, shuffle=True,
@@ -176,7 +182,7 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
         for variant, q_shift, d_shift in variants:
             dataset = QuRODataset(path, tokenizer, cfg.data, query_tokenizer=query_tokenizer,
                                   query_shift=q_shift, document_shift=d_shift,
-                                  limit=cfg.train.eval_max_samples)
+                                  limit=cfg.train.eval_max_samples, corpus=corpus)
             evals[variant] = DataLoader(dataset, batch_size=cfg.train.eval_batch_size,
                                         shuffle=False, collate_fn=collator)
     return train_set, train_loader, evals
@@ -186,12 +192,21 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
 def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=None):
     model.eval()
     rows, attention, source_tokens, readout_tokens = [], [], 0, 0
+    prompt_tokens = 0
     for batch in loader:
         batch = move_to_device(batch, device)
         predictions = model.generate_answer(batch, max_new_tokens=max_new_tokens, budget=budget)
         result = model.readout_cached(batch, budget=budget,
                                       return_attn=bool(dump_attn_path))
-        readout_tokens += int(result["budgets"].sum())
+        # Count the slots the prompt really carries: AG has none and RG none
+        # either, so xi_eff stays meaningful across every row of the table.
+        # What the decoder actually prefills, counted through the same code path
+        # that built the prompts.  This is the cost axis the method trades against:
+        # a few points of accuracy are cheap if the prefill is an order of
+        # magnitude shorter.
+        for prompt in model.build_prompts(batch, result["soft_token_mask"], training=False):
+            prompt_tokens += len(prompt.input_ids)
+            readout_tokens += len(prompt.slot_positions)
         if "source_token_counts" in batch:
             counts = batch["source_token_counts"] * batch["document_mask"]
             source_tokens += int(counts.sum())
@@ -214,6 +229,8 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     aggregate["em_above_constant"] = aggregate["em"] - floor["em"]
     aggregate["source_tokens"] = source_tokens
     aggregate["readout_tokens"] = readout_tokens
+    aggregate["decoder_input_tokens"] = prompt_tokens
+    aggregate["mean_decoder_input_tokens"] = prompt_tokens / max(1, len(rows))
     # Generator-side effective compression: the only ratio that makes two systems
     # comparable, because it is measured where the cost is actually paid.
     aggregate["xi_eff"] = (source_tokens / readout_tokens) if readout_tokens else None
@@ -255,8 +272,9 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                     json.dump(rows[:500], f, ensure_ascii=False, indent=2)
                 print(f"[eval] {key}: EM={aggregate['em']:.2%} F1={aggregate['f1']:.3f} "
                       f"sub={aggregate['substring']:.2%} "
-                      f"(constant floor EM={aggregate['constant_baseline_em']:.2%} "
+                      f"(floor {aggregate['constant_baseline_em']:.2%} "
                       f"-> {aggregate['em_above_constant']:+.2%}) "
+                      f"prefill={aggregate['mean_decoder_input_tokens']:.0f} tok "
                       f"xi_eff={aggregate['xi_eff']}")
     model.decoder_input_mode = original_mode
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:
@@ -271,12 +289,19 @@ def main():
     set_seed(cfg.train.seed)
     device = pick_device(cfg.train.device)
 
+    corpus = load_corpus(args.corpus) if args.corpus else None
+    if corpus:
+        print(f"[data] loaded {len(corpus)} document texts for the RG baseline")
+
     cache = LatentCache(cfg.data.cache_dir)
     cfg.readout.cache_hidden = cache.metadata.hidden_size
     print(f"[cache] {cache.metadata.compressor}: {len(cache)} docs, "
           f"m={cache.metadata.latent_size}, h={cache.metadata.hidden_size}")
 
     stack, model = build_model(cfg, cache_hidden=cache.metadata.hidden_size)
+    if args.disable_generator_adapter:
+        stack.lm.disable_adapters()
+        print("[generator] PISCO adapters disabled: plain Mistral-7B-Instruct-v0.2")
     model.to(device)
     stack.lm.to(device)
     cfg.to_json(os.path.join(cfg.train.out_dir, "config.json"))
@@ -290,7 +315,7 @@ def main():
         require_budget_labels=cfg.readout.adaptive_budget and not args.eval_only)
     train_set, train_loader, eval_loaders = build_loaders(
         cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
-        args.doc_control)
+        args.doc_control, corpus)
     print(f"[data] train={len(train_set)} device={device}")
 
     if args.eval_only:

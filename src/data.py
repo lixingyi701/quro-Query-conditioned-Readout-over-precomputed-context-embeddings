@@ -94,7 +94,7 @@ class QuRODataset(Dataset):
     """Query rows; ``query_shift`` builds the mismatch-query causal control."""
 
     def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,
-                 query_shift=0, document_shift=0, limit=None):
+                 query_shift=0, document_shift=0, limit=None, corpus=None):
         rows = read_jsonl(path)
         if limit is not None:
             rows = rows[:limit]
@@ -104,6 +104,9 @@ class QuRODataset(Dataset):
         self.cfg = data_cfg
         self.query_shift = int(query_shift)
         self.document_shift = int(document_shift)
+        # Only the uncompressed RG baseline reads raw text; the compressed path
+        # must never see it, or the cacheability claim would be untested.
+        self.corpus = corpus or {}
         self.eos = getattr(tokenizer, "eos_token_id", None)
 
     def __len__(self):
@@ -129,6 +132,8 @@ class QuRODataset(Dataset):
             "id": row["id"],
             "query": query,
             "retrieved_doc_ids": document_row["retrieved_doc_ids"],
+            "document_texts": [self.corpus[d] for d in document_row["retrieved_doc_ids"]
+                               if d in self.corpus],
             "query_ids": encode_text(self.query_tok, query)[: self.cfg.max_query_len],
             "query_gen_ids": encode_text(self.tok, query)[: self.cfg.max_query_len],
             "target_ids": target_ids,
@@ -173,6 +178,7 @@ class QuROCollator:
             "ids": [x["id"] for x in batch],
             "queries": [x["query"] for x in batch],
             "retrieved_doc_ids": doc_ids,
+            "document_texts": [x["document_texts"][: self.max_docs] for x in batch],
             "query_ids": query_ids, "query_mask": query_mask,
             "query_gen_ids": gen_ids, "query_gen_mask": gen_mask,
             "target_ids": [x["target_ids"] for x in batch],
@@ -208,3 +214,14 @@ def build_toy_tokenizer(paths_: Sequence[str], data_cfg, save_to: Optional[str] 
     if save_to:
         tokenizer.save(save_to)
     return tokenizer
+
+
+def load_corpus(paths_: Sequence[str]) -> Dict[str, str]:
+    """doc_id -> text, for the uncompressed RG baseline only."""
+    corpus: Dict[str, str] = {}
+    for path in paths_:
+        if not path:
+            continue
+        for row in read_jsonl(path):
+            corpus[str(row["doc_id"])] = str(row.get("text", row.get("document", "")))
+    return corpus

@@ -29,7 +29,11 @@ SYSTEM_PROMPT = (
 )
 
 #: D0 pisco-identical | D1 no question text | D2 question first | D3 slots only
-DECODER_INPUT_MODES = ("D0", "D1", "D2", "D3")
+#: AG closed-book, no evidence at all | RG uncompressed document text
+#: AG and RG are the bounds of the main table: they carry no memory slots, so the
+#: readout is bypassed and the comparison is purely "what does the decoder see".
+DECODER_INPUT_MODES = ("D0", "D1", "D2", "D3", "AG", "RG")
+SLOTLESS_MODES = ("AG", "RG")
 
 
 @dataclass
@@ -42,7 +46,8 @@ class PiscoPromptBuilder:
     """Render the PISCO chat prompt with exactly ``budget`` memory slots."""
 
     def __init__(self, tokenizer, n_mem_tokens: int, mode: str = "D0",
-                 system_prompt: str = SYSTEM_PROMPT):
+                 system_prompt: str = SYSTEM_PROMPT, max_doc_tokens: int = 128,
+                 max_prompt_tokens: int = 4096):
         if mode not in DECODER_INPUT_MODES:
             raise ValueError(f"decoder_input_mode must be one of {DECODER_INPUT_MODES}, got {mode}")
         self.tok = tokenizer
@@ -52,6 +57,11 @@ class PiscoPromptBuilder:
         self.mem_tokens: Sequence[str] = tokenizer.mem_tokens
         self.mem_token_ids = set(tokenizer.mem_token_ids)
         self.sep_token = getattr(tokenizer, "sep_token", "")
+        # RG must show the decoder the *same* text the compressor consumed, or it
+        # stops being an upper bound over the same evidence and becomes a
+        # different experiment.  PISCO truncates each document at 128 tokens.
+        self.max_doc_tokens = int(max_doc_tokens)
+        self.max_prompt_tokens = int(max_prompt_tokens)
 
     def slot_string(self, budget: int) -> str:
         """``budget`` slots laid out as PISCO's blocks of ``n_mem_tokens`` + ``<SEP>``.
@@ -69,7 +79,19 @@ class PiscoPromptBuilder:
             remaining -= take
         return "".join(out)
 
-    def _render(self, query: str, budget: int) -> str:
+    def _render(self, query: str, budget: int,
+                documents: Optional[Sequence[str]] = None) -> str:
+        if self.mode in SLOTLESS_MODES:
+            # Same system prompt and same "Background:/Question:" scaffolding as
+            # D0, so the only thing that varies across the main table is what
+            # occupies the evidence slot: nothing, raw text, or soft tokens.
+            if self.mode == "AG":
+                user = f"Question:{query}"
+            else:
+                joined = "\n\n".join(self._clip(d) for d in (documents or []))
+                user = f"Background:\n{joined}\n\nQuestion:{query}"
+            return self._chat(user)
+
         slots = self.slot_string(budget)
         if self.mode == "D3":
             return slots
@@ -82,6 +104,15 @@ class PiscoPromptBuilder:
         else:  # D2
             user = f"Question:{query}\n\nBackground:\n{slots}"
 
+        return self._chat(user)
+
+    def _clip(self, text: str) -> str:
+        ids = self.tok(text, add_special_tokens=False)["input_ids"]
+        if len(ids) <= self.max_doc_tokens:
+            return text
+        return self.tok.decode(ids[: self.max_doc_tokens], skip_special_tokens=True)
+
+    def _chat(self, user: str) -> str:
         messages = [{"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user.replace(":\\ ", ": ")}]
         try:
@@ -91,13 +122,24 @@ class PiscoPromptBuilder:
             merged = [{"role": "user", "content": self.system_prompt + "\n" + user}]
             return self.tok.apply_chat_template(merged, tokenize=False, add_generation_prompt=True)
 
-    def build(self, query: str, budget: int) -> BuiltPrompt:
-        text = self._render(query, budget)
+    def build(self, query: str, budget: int,
+              documents: Optional[Sequence[str]] = None) -> BuiltPrompt:
+        text = self._render(query, budget, documents)
+        # Truncating the whole prompt would silently cut the question, which sits
+        # *after* the evidence -- that is how the first RG run scored 0.8%, below
+        # closed-book, because the model never saw the question at all.  Documents
+        # are clipped individually instead; this cap only guards pathological input.
         input_ids = self.tok(text, add_special_tokens=False, truncation=True,
-                             max_length=2048)["input_ids"]
+                             max_length=self.max_prompt_tokens)["input_ids"]
+        if self.mode == "RG" and len(input_ids) >= self.max_prompt_tokens:
+            raise ValueError(
+                f"RG prompt hit the {self.max_prompt_tokens}-token cap; the question "
+                "would be truncated away. Lower max_docs or max_doc_tokens.")
         if self.mode == "D3":
             bos = getattr(self.tok, "bos_token_id", None)
             input_ids = ([bos] if bos is not None else []) + input_ids
+        if self.mode in SLOTLESS_MODES:
+            return BuiltPrompt(input_ids, [])
         positions = [i for i, token in enumerate(input_ids) if token in self.mem_token_ids]
         if len(positions) != budget:
             raise ValueError(
@@ -128,11 +170,13 @@ def assemble_inputs(
     for i, prompt in enumerate(prompts):
         ids = torch.tensor(prompt.input_ids, device=device)
         embeds = generator_embeddings(ids).clone()
-        valid = soft_tokens[i][soft_token_mask[i]].to(dtype)
-        if valid.size(0) != len(prompt.slot_positions):
-            raise ValueError(
-                f"row {i}: {valid.size(0)} soft tokens for {len(prompt.slot_positions)} slots")
-        embeds[torch.tensor(prompt.slot_positions, device=device)] = valid
+        if prompt.slot_positions:
+            valid = soft_tokens[i][soft_token_mask[i]].to(dtype)
+            if valid.size(0) != len(prompt.slot_positions):
+                raise ValueError(
+                    f"row {i}: {valid.size(0)} soft tokens for "
+                    f"{len(prompt.slot_positions)} slots")
+            embeds[torch.tensor(prompt.slot_positions, device=device)] = valid
         label = [-100] * embeds.size(0)
         if target_ids is not None and len(target_ids[i]):
             target = torch.tensor(list(target_ids[i]), device=device)

@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 
 from .baselines import PiscoDirectReadout, SimilarityTopBReadout, pool_query_in_generator_space
-from .prompt import PiscoPromptBuilder, assemble_inputs
+from .prompt import DECODER_INPUT_MODES, SLOTLESS_MODES, PiscoPromptBuilder, assemble_inputs
 from .readout import QuroReadout
 
 
@@ -119,7 +119,7 @@ class QuROModel(nn.Module):
 
         self.prompt_builders = {
             mode: PiscoPromptBuilder(tokenizer, self.n_mem_tokens, mode)
-            for mode in ("D0", "D1", "D2", "D3")
+            for mode in DECODER_INPUT_MODES
         }
         self.decoder_input_mode = cfg.decoder.input_mode
         self.query_text_dropout = float(cfg.decoder.query_text_dropout)
@@ -230,16 +230,18 @@ class QuROModel(nn.Module):
         tokens, so the loss cannot fall unless the readout really conditions on the
         query -- this is a training constraint, not merely an eval ablation.
         """
+        documents = batch.get("document_texts")
         prompts = []
         for i, query in enumerate(batch["queries"]):
             budget = int(token_mask[i].sum().item())
-            if budget < 1:
-                raise ValueError(f"row {i} has an empty readout budget")
             mode = self.decoder_input_mode
             if training and self.query_text_dropout > 0 and mode == "D0":
                 if random.random() < self.query_text_dropout:
                     mode = "D1"
-            prompts.append(self.prompt_builders[mode].build(query, budget))
+            if mode not in SLOTLESS_MODES and budget < 1:
+                raise ValueError(f"row {i} has an empty readout budget")
+            prompts.append(self.prompt_builders[mode].build(
+                query, budget, documents[i] if documents else None))
         return prompts
 
     def qa_loss(self, batch, budget=None, return_attn=False):
