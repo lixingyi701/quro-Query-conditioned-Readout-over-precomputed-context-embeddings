@@ -34,6 +34,9 @@ from src.cache import LATENT_BIN, _safe_torch_load
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", required=True)
+    ap.add_argument("--merge", nargs="*", default=[],
+                    help="extra cache directories to fold into --cache; used when a "
+                         "cache was built in parallel slices, one per GPU")
     ap.add_argument("--remove_shards", action="store_true",
                     help="delete the .pt shards after verifying the packed file")
     args = ap.parse_args()
@@ -45,6 +48,30 @@ def main():
     if manifest.get("storage") == "memmap":
         print(f"{root} is already packed")
         return
+
+    # Fold in the parallel slices before sizing the output file.  Document IDs are
+    # content hashes, so a passage that appears in two slices is simply the same
+    # entry twice and the later one wins; shard indices are renumbered.
+    sources = [(root, manifest)]
+    for extra in args.merge:
+        extra = os.path.abspath(extra)
+        with open(os.path.join(extra, "manifest.json"), encoding="utf-8") as f:
+            other = json.load(f)
+        for key in ("latent_size", "hidden_size", "dtype", "compressor"):
+            if other.get(key) != manifest.get(key):
+                raise SystemExit(f"{extra} disagrees on {key}: "
+                                 f"{other.get(key)} vs {manifest.get(key)}")
+        offset = len(manifest["shards"])
+        for doc_id, loc in other["documents"].items():
+            manifest["documents"][doc_id] = {**loc, "shard": int(loc["shard"]) + offset}
+        manifest["shards"].extend(other["shards"])
+        sources.append((extra, other))
+    shard_root = {}
+    base = 0
+    for src_root, src in sources:
+        for i in range(len(src["shards"])):
+            shard_root[base + i] = src_root
+        base += len(src["shards"])
 
     documents = manifest["documents"]
     shards = manifest["shards"]
@@ -65,8 +92,9 @@ def main():
     packed = np.memmap(tmp_path, dtype=dtype, mode="w+", shape=(total, m, h))
     index, started = 0, time.time()
     for shard_idx in sorted(by_shard):
-        payload = _safe_torch_load(os.path.join(root, str(shards[shard_idx]["file"])),
-                                   map_location="cpu")
+        payload = _safe_torch_load(
+            os.path.join(shard_root.get(shard_idx, root), str(shards[shard_idx]["file"])),
+            map_location="cpu")
         latents = payload["latents"].numpy()
         for row, doc_id in sorted(by_shard[shard_idx]):
             packed[index] = latents[row]
@@ -100,8 +128,8 @@ def main():
     print(f"verified {len(sample)} documents through LatentCache: {tuple(latents.shape)}")
 
     if args.remove_shards:
-        for shard in shards:
-            os.remove(os.path.join(root, str(shard["file"])))
+        for i, shard in enumerate(shards):
+            os.remove(os.path.join(shard_root.get(i, root), str(shard["file"])))
         print(f"removed {len(shards)} shards")
     else:
         print(f"kept {len(shards)} shards (pass --remove_shards to reclaim "

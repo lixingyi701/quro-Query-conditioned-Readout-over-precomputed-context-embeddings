@@ -278,7 +278,10 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                 result["metrics"][key] = aggregate
                 filename = f"predictions_{name.replace('/', '_')}_{mode}_B{budget}.json"
                 with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
-                    json.dump(rows[:500], f, ensure_ascii=False, indent=2)
+                    # Every row, not a prefix: paired significance tests between
+                    # arms need the whole split, and a 1.5-point difference is
+                    # unresolvable at n=500 (McNemar p=0.44) but reachable at 2000.
+                    json.dump(rows, f, ensure_ascii=False, indent=2)
                 print(f"[eval] {key}: EM={aggregate['em']:.2%} F1={aggregate['f1']:.3f} "
                       f"sub={aggregate['substring']:.2%} "
                       f"(floor {aggregate['constant_baseline_em']:.2%} "

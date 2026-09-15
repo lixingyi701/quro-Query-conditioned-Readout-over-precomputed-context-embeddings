@@ -62,11 +62,18 @@ def main():
     ap.add_argument("--shard_size", type=int, default=4096)
     ap.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
     ap.add_argument("--limit", type=int, default=None, help="cache only the first N documents")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="skip the first N documents; with --limit this carves out a "
+                         "contiguous slice so several GPUs can build one cache in "
+                         "parallel, each into its own out_dir, merged afterwards by "
+                         "scripts/pack_latent_cache.py --merge")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--resume", action="store_true", help="continue an interrupted cache")
     args = ap.parse_args()
 
     rows = read_documents(args.documents)
+    if args.offset:
+        rows = rows[args.offset:]
     if args.limit:
         rows = rows[: args.limit]
 
