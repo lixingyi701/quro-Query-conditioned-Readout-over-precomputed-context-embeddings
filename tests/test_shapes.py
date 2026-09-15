@@ -1,4 +1,10 @@
-"""Executable QuRO v0.0 contract tests (pytest is not required)."""
+"""Executable contract tests for QuRO v0.1 -- CPU only, no downloads.
+
+These cover the invariants that experiments silently depend on: readout shapes,
+the residual initialisation that makes step 0 equal attention-pooled PISCO, the
+nested budget structure, the PISCO-identical prompt slots, and end-to-end
+gradient flow.  Run with ``python tests/test_shapes.py``.
+"""
 
 from __future__ import annotations
 
@@ -12,157 +18,210 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import get_config
+from src.baselines import PiscoDirectReadout, SimilarityTopBReadout
 from src.cache import CacheMetadata, LatentCache, LatentCacheWriter
-from src.data import QuROCollator, RAGCompressionDataset
+from src.data import QuROCollator, QuRODataset, doc_id_for, move_to_device
 from src.model import build_model
+from src.prompt import PiscoPromptBuilder
+from src.readout import QuroReadout
 
-
-FAILURES = []
+PASS, FAIL = [], []
 
 
 def check(name, condition, detail=""):
-    status = "PASS" if condition else "FAIL"
-    print(f"{status:4s} {name} {detail}")
-    if not condition:
-        FAILURES.append(name)
+    (PASS if condition else FAIL).append(name)
+    print(f"{'PASS' if condition else 'FAIL'} {name} {detail}")
+
+
+# ----------------------------------------------------------------------------
+# Synthetic workspace: a tiny corpus, its latent cache, and matching query rows.
+# ----------------------------------------------------------------------------
+def build_workspace(root, num_docs=12, m=4, h=64, num_rows=8):
+    texts = [f"Document number {i} states that the code word is alpha{i} and nothing else."
+             for i in range(num_docs)]
+    doc_ids = [doc_id_for(t) for t in texts]
+
+    torch.manual_seed(0)
+    cache_dir = os.path.join(root, "cache")
+    metadata = CacheMetadata(compressor="synthetic", latent_size=m, hidden_size=h,
+                             dtype="float32", compr_rate=16, doc_max_length=128)
+    with LatentCacheWriter(cache_dir, metadata, shard_size=5) as writer:
+        for i, doc_id in enumerate(doc_ids):
+            writer.add(doc_id, torch.randn(m, h), source_token_count=100 + i,
+                       original_token_count=150 + i)
+
+    rows = []
+    for i in range(num_rows):
+        picked = [doc_ids[i % num_docs], doc_ids[(i + 1) % num_docs]]
+        rows.append({"id": f"q{i}", "query": f"What is the code word in document {i}?",
+                     "retrieved_doc_ids": picked, "answers": [f"alpha{i % num_docs}"]})
+    train_path = os.path.join(root, "train.jsonl")
+    with open(train_path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    return cache_dir, train_path, doc_ids, m, h
+
+
+# ----------------------------------------------------------------------------
+def test_readout(m=4, h=64, cache_h=64):
+    torch.manual_seed(0)
+    b, k, budget, q_dim = 3, 2, 8, 32
+    readout = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                          d_readout=48, max_budget=budget, num_blocks=2, num_heads=4)
+    latents = torch.randn(b, k, m, cache_h)
+    doc_mask = torch.ones(b, k, dtype=torch.bool)
+    doc_mask[2, 1] = False
+    query = torch.randn(b, 6, q_dim)
+    query_mask = torch.ones(b, 6, dtype=torch.bool)
+
+    out, aux = readout(latents, doc_mask, query, query_mask, budget=budget, return_attn=True)
+    check("readout shape is (B, budget, h_gen)", tuple(out.shape) == (b, budget, cache_h),
+          str(tuple(out.shape)))
+    check("attention is (B, H, budget, K*m)",
+          tuple(aux["attention"].shape)[-2:] == (budget, k * m))
+    check("masked documents get zero attention",
+          float(aux["attention"][2, :, :, m:].abs().max()) < 1e-6)
+
+    # Zero-initialised residual: step 0 must equal attention-pooled cached latents.
+    alpha = aux["attention"].mean(1)
+    pooled = torch.bmm(alpha, latents.reshape(b, k * m, cache_h))
+    check("residual init reproduces attention-pooled latents",
+          torch.allclose(out, pooled, atol=1e-4),
+          f"max|diff|={float((out - pooled).abs().max()):.2e}")
+
+    smaller, _ = readout(latents, doc_mask, query, query_mask, budget=4)
+    check("smaller budget is a prefix of the larger one",
+          torch.allclose(smaller, out[:, :4], atol=1e-4))
+
+    other = torch.randn(b, 6, q_dim)
+    shifted, _ = readout(latents, doc_mask, other, query_mask, budget=budget)
+    check("readout responds to the query", not torch.allclose(shifted, out, atol=1e-3))
+
+    agnostic = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                           d_readout=48, max_budget=budget, num_heads=4,
+                           output_query_mode="agnostic")
+    a1, _ = agnostic(latents, doc_mask, query, query_mask, budget=budget)
+    a2, _ = agnostic(latents, doc_mask, other, query_mask, budget=budget)
+    check("ablation A ignores the query (variant A)", torch.allclose(a1, a2, atol=1e-6))
+
+    params = sum(p.numel() for p in readout.parameters())
+    check("readout parameter count is reported", params > 0, f"{params/1e6:.3f}M at d_r=48")
+
+
+def test_baselines(m=4, h=64):
+    torch.manual_seed(0)
+    b, k = 2, 3
+    latents = torch.randn(b, k, m, h)
+    doc_mask = torch.ones(b, k, dtype=torch.bool)
+    doc_mask[1, 2] = False
+
+    direct = PiscoDirectReadout(h, h)
+    out, aux = direct(latents, doc_mask)
+    check("pisco_direct emits K*m tokens", tuple(out.shape) == (b, k * m, h))
+    check("pisco_direct budget follows the document mask",
+          int(aux["token_mask"][1].sum()) == 2 * m)
+
+    topb = SimilarityTopBReadout(h, h)
+    out, aux = topb(latents, doc_mask, budget=5, query_vector=torch.randn(b, h))
+    check("similarity_topb emits exactly B tokens", tuple(out.shape) == (b, 5, h))
+    check("similarity_topb never selects a masked document",
+          bool(aux["token_mask"].all()))
+
+
+def test_prompt(tokenizer, n_mem_tokens):
+    d0 = PiscoPromptBuilder(tokenizer, n_mem_tokens, "D0")
+    d1 = PiscoPromptBuilder(tokenizer, n_mem_tokens, "D1")
+    query = "who designed the building and in which year"
+    for budget in (1, 4, 8, 16):
+        built = d0.build(query, budget)
+        check(f"prompt exposes exactly {budget} memory slots",
+              len(built.slot_positions) == budget)
+    a, b = d0.build(query, 8), d1.build(query, 8)
+    check("D1 keeps the slots but drops the question text",
+          len(b.slot_positions) == 8 and len(b.input_ids) < len(a.input_ids))
+    check("D1 removes every query token",
+          not set(tokenizer(query)["input_ids"]).issubset(set(b.input_ids)))
+
+
+def test_cache(cache_dir, doc_ids, m, h):
+    cache = LatentCache(cache_dir)
+    check("cache manifest records the compression rate", cache.metadata.compr_rate == 16)
+    check("cache manifest records doc_max_length", cache.metadata.doc_max_length == 128)
+    latents, doc_mask, counts = cache.get_many([[doc_ids[0], doc_ids[1]], [doc_ids[2]]])
+    check("cache batches to (B, K, m, h)", tuple(latents.shape) == (2, 2, m, h))
+    check("padded document slots are masked", doc_mask.tolist() == [[True, True], [True, False]])
+    check("source token counts come back", counts[0, 0].item() == 100)
+    try:
+        cache.get_many([["missing-doc"]])
+        check("unknown document IDs raise", False)
+    except KeyError:
+        check("unknown document IDs raise", True)
+
+
+def test_end_to_end(cache_dir, train_path, m, h):
+    cfg = get_config("toy")
+    with tempfile.TemporaryDirectory() as out_dir:
+        cfg.train.out_dir = out_dir
+        cfg.data.train_file = train_path
+        cfg.data.cache_dir = cache_dir
+        cfg.data.max_docs = 2
+        cfg.readout.cache_hidden = h
+        cfg.readout.max_budget = 8
+        cfg.readout.budget_buckets = [4, 8]
+        cfg.generator.toy_d_model = h
+        cfg.revalidate()
+
+        cache = LatentCache(cache_dir)
+        stack, model = build_model(cfg, cache_hidden=h)
+        collator = QuROCollator(cache, pad_id=model.pad_id, max_docs=2)
+        dataset = QuRODataset(train_path, stack.tokenizer, cfg.data,
+                              query_tokenizer=stack.query_tokenizer)
+        batch = collator([dataset[i] for i in range(4)])
+
+        result = model.readout_cached(batch, budget=8)
+        check("end-to-end soft tokens are (B, budget, d_gen)",
+              tuple(result["soft_tokens"].shape) == (4, 8, h))
+
+        output = model(batch, budget=8, residual_weight=0.1)
+        check("loss is finite", torch.isfinite(output["loss"]).item())
+        check("residual penalty is reported", "residual_penalty" in output)
+
+        output["loss"].backward()
+        slots = model.readout.output_query.slots
+        check("gradient reaches the output query slots",
+              slots.grad is not None and float(slots.grad.abs().sum()) > 0)
+        # The residual branch is zero-initialised, so any norm taken with sqrt()
+        # has an infinite derivative at step 0 and silently NaNs every gradient.
+        bad = [name for name, p in model.named_parameters()
+               if p.grad is not None and not torch.isfinite(p.grad).all()]
+        check("every gradient is finite at the zero-residual initialisation",
+              not bad, f"non-finite: {bad[:3]}")
+
+        predictions = model.generate_answer(batch, max_new_tokens=4)
+        check("generation returns one string per row",
+              len(predictions) == 4 and all(isinstance(x, str) for x in predictions))
+
+        report = model.parameter_report()
+        check("parameter report totals up",
+              report["total"] >= report["readout"], json.dumps(report))
 
 
 def main():
-    torch.manual_seed(0)
-    cfg = get_config("tiny")
-    cfg.perceiver.num_compressed = 8
-    cfg.perceiver.budget_buckets = [2, 4, 8]
-    cfg.perceiver.__post_init__()
-    cfg.train.out_dir = "runs/_test"
-    os.makedirs(cfg.train.out_dir, exist_ok=True)
-    tokenizer, generator, model = build_model(cfg)
-    model.eval()
+    with tempfile.TemporaryDirectory() as root:
+        cache_dir, train_path, doc_ids, m, h = build_workspace(root)
+        test_readout(m, h, h)
+        test_baselines(m, h)
+        test_cache(cache_dir, doc_ids, m, h)
 
-    # Two queries, two retrieved document slots; one slot is padding.
-    b, k, length = 2, 2, 31
-    ids = torch.randint(4, len(tokenizer), (b, k, length))
-    token_mask = torch.ones_like(ids, dtype=torch.bool)
-    document_mask = torch.tensor([[True, True], [True, False]])
-    query_ids = torch.randint(4, len(tokenizer), (b, 7))
-    query_mask = torch.ones_like(query_ids, dtype=torch.bool)
+        from src.toy import ToyTokenizer
+        test_prompt(ToyTokenizer.build_from_texts(["who designed the building and in which year"]), 8)
 
-    with torch.no_grad():
-        per_doc = model.encode_documents(ids, token_mask, document_mask)
-        readout = model.readout_cached(
-            per_doc, document_mask, query_ids, query_mask, return_attn=True)
-    m, d = cfg.perceiver.num_latents, cfg.perceiver.d_latent
-    check("independent document encoding", per_doc.shape == (b, k, m, d),
-          str(tuple(per_doc.shape)))
-    check("online memory is K*m", readout["latent_mask"].shape == (b, k * m))
-    check("fixed budget produces B outputs",
-          readout["soft_tokens"].shape == (b, 8, model.d_gen))
-    check("attention is B by K*m",
-          readout["attention"].shape[-2:] == (8, k * m))
+        test_end_to_end(cache_dir, train_path, m, h)
 
-    # A masked document must not influence online readout.
-    changed = per_doc.clone()
-    changed[1, 1] = 1e4
-    with torch.no_grad():
-        a = model.readout_cached(per_doc, document_mask, query_ids, query_mask)["soft_tokens"]
-        c = model.readout_cached(changed, document_mask, query_ids, query_mask)["soft_tokens"]
-    check("masked retrieved documents are ignored", (a[1] - c[1]).abs().max() < 1e-5)
-
-    with torch.no_grad():
-        shifted = model.readout_cached(
-            per_doc, document_mask, query_ids.flip(0), query_mask)["soft_tokens"]
-    check("query-conditioned readout changes with query", (a - shifted).abs().mean() > 1e-5)
-
-    cfg_a = get_config("tiny")
-    cfg_a.perceiver.output_query_mode = "agnostic"
-    cfg_a.perceiver.num_compressed = 8
-    cfg_a.perceiver.budget_buckets = [2, 4, 8]
-    cfg_a.perceiver.__post_init__()
-    cfg_a.train.out_dir = "runs/_test_agnostic"
-    _, _, agnostic = build_model(cfg_a)
-    agnostic.eval()
-    random_latents = torch.randn(b, k, cfg_a.perceiver.num_latents,
-                                 cfg_a.perceiver.d_latent)
-    with torch.no_grad():
-        x = agnostic.readout_cached(
-            random_latents, document_mask, query_ids, query_mask)["soft_tokens"]
-        y = agnostic.readout_cached(
-            random_latents, document_mask, query_ids.flip(0), query_mask)["soft_tokens"]
-    check("Ablation A is query agnostic", (x - y).abs().max() < 1e-6)
-
-    with torch.no_grad():
-        dynamic = model.readout_cached(
-            per_doc, document_mask, query_ids, query_mask, budget=[2, 8])
-    check("discrete per-query budgets", dynamic["soft_token_mask"].sum(1).tolist() == [2, 8])
-
-    # Disk cache contract.
-    with tempfile.TemporaryDirectory() as directory:
-        meta = CacheMetadata("unit-test", m, d, "float32")
-        with LatentCacheWriter(directory, meta, shard_size=1) as writer:
-            writer.add("d0", per_doc[0, 0], 100)
-            writer.add("d1", per_doc[0, 1], 80)
-        cache = LatentCache(directory, max_open_shards=1)
-        cached, mask, counts = cache.get_many([["d0", "d1"], ["d1"]])
-        check("cache round-trip shape", cached.shape == (2, 2, m, d))
-        check("cache document mask", mask.tolist() == [[True, True], [True, False]])
-        check("cache source token counts", counts.tolist() == [[100, 80], [80, 0]])
-        check("cache values round-trip", torch.equal(cached[0, 0], per_doc[0, 0]))
-
-    # Teacher-generated targets take priority over gold answers.
-    with tempfile.TemporaryDirectory() as directory:
-        path = os.path.join(directory, "rows.jsonl")
-        row = {"id": "q0", "query": "question", "retrieved_doc_ids": ["d0"],
-               "documents": ["evidence"], "answer": ["gold"],
-               "teacher_output": "teacher sequence"}
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(row) + "\n")
-        dataset = RAGCompressionDataset(path, tokenizer, cfg.data)
-        check("sequence-level KD target selected",
-              dataset.rows[0]["target"] == "teacher sequence")
-        meta = CacheMetadata("unit-test", m, d, "float32")
-        with LatentCacheWriter(os.path.join(directory, "cache"), meta) as writer:
-            writer.add("d0", per_doc[0, 0], 12)
-        collator = QuROCollator(model.pad_id, model.enc_pad_id,
-                               cache=LatentCache(os.path.join(directory, "cache")))
-        item = collator([dataset[0]])
-        check("collator resolves IDs through cache",
-              item["cached_latents"].shape == (1, 1, m, d))
-
-    # End-to-end loss from a dataset row resolved through the cache.
-    model.train()
-    output = model(item)
-    check("cache-first loss is finite", torch.isfinite(output["loss"]).item())
-    output["loss"].backward()
-    check("gradient reaches readout slots", model.output_query.slots.grad is not None)
-    check("frozen generator has no gradients",
-          all(parameter.grad is None for parameter in generator.parameters()))
-
-    # Adaptive B is supervised by row-level discrete bucket labels.
-    cfg_b = get_config("tiny")
-    cfg_b.perceiver.adaptive_budget = True
-    cfg_b.perceiver.budget_buckets = [2, 8]
-    cfg_b.perceiver.__post_init__()
-    cfg_b.train.out_dir = "runs/_test_budget"
-    _, _, adaptive = build_model(cfg_b)
-    budget_item = {
-        "cached_latents": torch.randn(2, 1, cfg_b.perceiver.num_latents,
-                                      cfg_b.perceiver.d_latent),
-        "document_mask": torch.ones(2, 1, dtype=torch.bool),
-        "query_ids": query_ids,
-        "query_mask": query_mask,
-        "prompt_ids": [[4, 5], [4, 5]],
-        "target_ids": [[6, tokenizer.eos_token_id], [7, tokenizer.eos_token_id]],
-        "budget": torch.tensor([2, 8]),
-    }
-    budget_output = adaptive(budget_item)
-    check("adaptive budget adds supervised loss", "budget_loss" in budget_output)
-    budget_output["loss"].backward()
-    check("gradient reaches budget controller",
-          any(parameter.grad is not None
-              for parameter in adaptive.budget_selector.parameters()))
-
-    if FAILURES:
-        raise SystemExit(f"{len(FAILURES)} failures: {FAILURES}")
-    print("All QuRO v0.0 contract tests passed.")
+    print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
+    if FAIL:
+        print("failed:", ", ".join(FAIL))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

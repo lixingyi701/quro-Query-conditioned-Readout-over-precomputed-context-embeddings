@@ -1,7 +1,12 @@
-"""Token-level Hugging Face encoder used for online queries.
+"""Token-level Hugging Face encoder for the online query.
 
-Cache-backed QuRO freezes this module and obtains document latents from the
-offline PISCO/COCOM cache. Prototype mode may also reuse it for documents.
+This is the Q side of the readout and the only network besides the readout that
+runs at query time, so its cost belongs in the efficiency accounting.  It returns
+**per-token hidden states**, not a pooled sentence vector: pooling would hand every
+output slot the same conditioning signal and remove the ``xattn`` mode's ability to
+let different slots attend to different parts of the question.
+
+Document latents never pass through here -- they come from the offline cache.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import torch.nn as nn
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
-class HFDocEncoder(nn.Module):
+class HFTokenEncoder(nn.Module):
     def __init__(self, dc):
         super().__init__()
         from transformers import AutoModel
@@ -97,3 +102,7 @@ def build_encoder_tokenizer(dc):
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     return tok
+
+
+# Historical name kept so older configs/checkpoints keep importing cleanly.
+HFDocEncoder = HFTokenEncoder

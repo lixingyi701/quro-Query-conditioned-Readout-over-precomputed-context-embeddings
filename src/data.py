@@ -1,18 +1,23 @@
-"""Cache-first data pipeline for QuRO v0.0.
+"""Cache-first data pipeline: queries in, cached latents out.
 
-Canonical query rows:
-  {"id": ..., "query": ..., "retrieved_doc_ids": [...],
-   "answers": [...], "teacher_output": ...}
+Canonical row (produced by ``scripts/prepare_selecom_data.py``)::
 
-The online collator resolves document IDs through LatentCache. Raw document text
-is accepted only for prototype encoding and cache construction.
+    {"id": ..., "query": ..., "retrieved_doc_ids": [...], "answers": [...],
+     "teacher_output": ..., "budget": ...}
+
+Documents are addressed only by ID.  Raw text is accepted for convenience --
+IDs are then derived by content hash, the same way the corpus was built -- but the
+online path never tokenises it: if training re-encoded documents each epoch, the
+claim that QuRO trains and serves from precomputed representations would be
+untested.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -20,9 +25,12 @@ from torch.utils.data import Dataset
 from .cache import LatentCache
 
 
+def doc_id_for(text: str) -> str:
+    """Content-addressed document ID, shared by corpus building and training."""
+    return "d:" + hashlib.sha1(text.strip().encode("utf-8")).hexdigest()[:20]
+
+
 def encode_text(tokenizer, text: str) -> List[int]:
-    if hasattr(tokenizer, "itos"):
-        return tokenizer.encode(text, add_special_tokens=False)
     return tokenizer(text, add_special_tokens=False)["input_ids"]
 
 
@@ -37,16 +45,8 @@ def _document_text(value: Any) -> str:
     if isinstance(value, dict):
         title = str(value.get("title", "")).strip()
         text = str(value.get("text", value.get("content", value.get("document", ""))))
-        return (f"Title: {title}\nContent: {text}" if title else text)
+        return f"Title: {title}\nContent: {text}" if title else text
     return str(value)
-
-
-def _document_id(value: Any, row_id: str, rank: int) -> str:
-    if isinstance(value, dict):
-        for key in ("doc_id", "id", "passage_id", "_id"):
-            if value.get(key) is not None:
-                return str(value[key])
-    return f"{row_id}:doc:{rank}"
 
 
 def _answers(row: Dict[str, Any]) -> List[str]:
@@ -56,60 +56,51 @@ def _answers(row: Dict[str, Any]) -> List[str]:
 
 
 def adapt_row(row: Dict[str, Any], cfg, idx: int) -> Dict[str, Any]:
-    """Normalize synthetic, DPR-like, and cache-first rows."""
     out = dict(row)
     row_id = str(row.get("id", row.get("q_id", idx)))
-    query = str(row.get("query", row.get("question", "")))
+    query = str(row.get("query", row.get("question", ""))).strip()
     if not query:
         raise ValueError(f"row {row_id} has no query/question")
 
-    docs_raw = row.get("documents")
-    if docs_raw is None and "document" in row:
-        docs_raw = [row["document"]]
-    docs_raw = list(docs_raw or [])[: max(1, cfg.max_docs)]
-    texts = [_document_text(x) for x in docs_raw]
-
-    explicit_ids = row.get("retrieved_doc_ids", row.get("doc_ids"))
-    if explicit_ids is not None:
-        doc_ids = [str(x) for x in explicit_ids][: max(1, cfg.max_docs)]
+    doc_ids = row.get("retrieved_doc_ids", row.get("doc_ids"))
+    if doc_ids is not None:
+        doc_ids = [str(x) for x in doc_ids]
     else:
-        doc_ids = [_document_id(value, row_id, rank) for rank, value in enumerate(docs_raw)]
+        raw_docs = row.get("documents")
+        if raw_docs is None and "document" in row:
+            raw_docs = [row["document"]]
+        doc_ids = [doc_id_for(_document_text(x)) for x in (raw_docs or [])]
+    if cfg.max_docs:
+        doc_ids = doc_ids[: cfg.max_docs]
     if not doc_ids:
         raise ValueError(f"row {row_id} has no retrieved documents")
-    if len(texts) not in (0, len(doc_ids)):
-        raise ValueError(f"row {row_id}: document text count and doc_id count differ")
 
     answers = _answers(row)
-    teacher_output = row.get("teacher_output", row.get("teacher_answer"))
-    target = (str(teacher_output) if teacher_output is not None and cfg.prefer_teacher_output
-              else (answers[0] if answers else ""))
+    teacher = row.get("teacher_output", row.get("teacher_answer"))
+    use_teacher = teacher is not None and cfg.prefer_teacher_output
+    target = str(teacher) if use_teacher else (answers[0] if answers else "")
     if not target:
         raise ValueError(f"row {row_id} has neither teacher_output nor answer")
 
     out.update({
-        "id": row_id,
-        "query": query,
-        "documents": texts,
-        "retrieved_doc_ids": doc_ids,
-        "answers": answers,
-        "answer": answers[0] if answers else target,
-        "target": target,
-        "target_source": "teacher" if teacher_output is not None and cfg.prefer_teacher_output else "gold",
+        "id": row_id, "query": query, "retrieved_doc_ids": doc_ids,
+        "answers": answers, "answer": answers[0] if answers else target,
+        "target": target, "target_source": "teacher" if use_teacher else "gold",
     })
     return out
 
 
-class RAGCompressionDataset(Dataset):
-    """Query rows; query_shift creates the mismatch-query causal control."""
+class QuRODataset(Dataset):
+    """Query rows; ``query_shift`` builds the mismatch-query causal control."""
 
-    def __init__(self, path, tokenizer, data_cfg, query_shift=0,
-                 enc_tokenizer=None, limit=None):
+    def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,
+                 query_shift=0, limit=None):
         rows = read_jsonl(path)
         if limit is not None:
             rows = rows[:limit]
         self.rows = [adapt_row(row, data_cfg, i) for i, row in enumerate(rows)]
         self.tok = tokenizer
-        self.enc_tok = enc_tokenizer if enc_tokenizer is not None else tokenizer
+        self.query_tok = query_tokenizer if query_tokenizer is not None else tokenizer
         self.cfg = data_cfg
         self.query_shift = int(query_shift)
         self.eos = getattr(tokenizer, "eos_token_id", None)
@@ -119,23 +110,20 @@ class RAGCompressionDataset(Dataset):
 
     def __getitem__(self, index):
         row = self.rows[index]
+        # The mismatch control swaps in a neighbour's query while keeping this
+        # row's documents and answer: a query-conditioned readout must degrade.
         query_row = self.rows[(index + self.query_shift) % len(self.rows)]
-        query_ids = encode_text(self.enc_tok, query_row["query"])[: self.cfg.max_query_len]
-        prompt_ids = encode_text(
-            self.tok, self.cfg.qa_prompt_template.format(query=row["query"]))
+        query = query_row["query"]
+
         target_ids = encode_text(self.tok, " " + row["target"].strip())[: self.cfg.max_answer_len]
         if self.eos is not None:
             target_ids.append(self.eos)
-        documents = [
-            encode_text(self.enc_tok, text)[: self.cfg.max_doc_len]
-            for text in row["documents"]
-        ]
         return {
             "id": row["id"],
+            "query": query,
             "retrieved_doc_ids": row["retrieved_doc_ids"],
-            "document_input_ids": documents,
-            "query_ids": query_ids,
-            "prompt_ids": prompt_ids,
+            "query_ids": encode_text(self.query_tok, query)[: self.cfg.max_query_len],
+            "query_gen_ids": encode_text(self.tok, query)[: self.cfg.max_query_len],
             "target_ids": target_ids,
             "budget": row.get("budget"),
             "raw": row,
@@ -148,109 +136,68 @@ def _pad_2d(sequences, pad_id):
     mask = torch.zeros((len(sequences), width), dtype=torch.bool)
     for i, seq in enumerate(sequences):
         if seq:
-            ids[i, :len(seq)] = torch.tensor(seq)
-            mask[i, :len(seq)] = True
+            ids[i, : len(seq)] = torch.tensor(seq)
+            mask[i, : len(seq)] = True
         else:
             mask[i, 0] = True
     return ids, mask
 
 
-def _pad_documents(batch_documents, pad_id):
-    batch_size = len(batch_documents)
-    k = max(1, max((len(x) for x in batch_documents), default=0))
-    length = max(1, max((len(doc) for docs in batch_documents for doc in docs), default=0))
-    ids = torch.full((batch_size, k, length), pad_id, dtype=torch.long)
-    token_mask = torch.zeros((batch_size, k, length), dtype=torch.bool)
-    document_mask = torch.zeros((batch_size, k), dtype=torch.bool)
-    for i, docs in enumerate(batch_documents):
-        for j, doc in enumerate(docs):
-            document_mask[i, j] = True
-            if doc:
-                ids[i, j, :len(doc)] = torch.tensor(doc)
-                token_mask[i, j, :len(doc)] = True
-            else:
-                token_mask[i, j, 0] = True
-    return ids, token_mask, document_mask
-
-
 class QuROCollator:
-    """Resolve cache IDs or construct independent prototype document tensors."""
+    """Resolve document IDs through the latent cache and pad the query tensors."""
 
-    def __init__(self, pad_id, enc_pad_id=None, cache: Optional[LatentCache] = None,
-                 max_docs=None, require_budget_labels=False):
-        self.pad_id = pad_id
-        self.enc_pad_id = pad_id if enc_pad_id is None else enc_pad_id
+    def __init__(self, cache: LatentCache, pad_id: int, query_pad_id: Optional[int] = None,
+                 max_docs: Optional[int] = None, require_budget_labels: bool = False):
+        if cache is None:
+            raise ValueError("QuRO is cache-first: a LatentCache is required")
         self.cache = cache
+        self.pad_id = pad_id
+        self.query_pad_id = pad_id if query_pad_id is None else query_pad_id
         self.max_docs = max_docs
         self.require_budget_labels = bool(require_budget_labels)
 
     def __call__(self, batch):
-        query_ids, query_mask = _pad_2d(
-            [item["query_ids"] for item in batch], self.enc_pad_id)
-        doc_ids = [item["retrieved_doc_ids"][:self.max_docs] for item in batch]
+        query_ids, query_mask = _pad_2d([x["query_ids"] for x in batch], self.query_pad_id)
+        gen_ids, gen_mask = _pad_2d([x["query_gen_ids"] for x in batch], self.pad_id)
+        doc_ids = [x["retrieved_doc_ids"][: self.max_docs] for x in batch]
+        latents, document_mask, counts = self.cache.get_many(doc_ids, max_docs=self.max_docs)
+
         out = {
-            "ids": [item["id"] for item in batch],
+            "ids": [x["id"] for x in batch],
+            "queries": [x["query"] for x in batch],
             "retrieved_doc_ids": doc_ids,
-            "query_ids": query_ids,
-            "query_mask": query_mask,
-            "prompt_ids": [item["prompt_ids"] for item in batch],
-            "target_ids": [item["target_ids"] for item in batch],
-            "raw": [item["raw"] for item in batch],
+            "query_ids": query_ids, "query_mask": query_mask,
+            "query_gen_ids": gen_ids, "query_gen_mask": gen_mask,
+            "target_ids": [x["target_ids"] for x in batch],
+            "cached_latents": latents, "document_mask": document_mask,
+            "source_token_counts": counts,
+            "raw": [x["raw"] for x in batch],
         }
-        budgets = [item.get("budget") for item in batch]
-        if any(value is not None for value in budgets) and not all(
-                value is not None for value in budgets):
-            raise ValueError("budget labels must be present for every item in a batch or none")
-        if self.require_budget_labels and not all(value is not None for value in budgets):
-            raise ValueError("adaptive-budget training requires a budget label for every row")
-        if all(value is not None for value in budgets):
+        budgets = [x.get("budget") for x in batch]
+        if any(v is not None for v in budgets) and not all(v is not None for v in budgets):
+            raise ValueError("budget labels must be present for every row in a batch or none")
+        if self.require_budget_labels and not all(v is not None for v in budgets):
+            raise ValueError("adaptive-budget training requires a budget label on every row")
+        if all(v is not None for v in budgets):
             out["budget"] = torch.tensor(budgets, dtype=torch.long)
-        if self.cache is not None:
-            latents, document_mask, counts = self.cache.get_many(
-                doc_ids, max_docs=self.max_docs)
-            out.update(cached_latents=latents, document_mask=document_mask,
-                       source_token_counts=counts)
-        else:
-            docs = [item["document_input_ids"][:self.max_docs] for item in batch]
-            if any(len(x) == 0 for x in docs):
-                raise ValueError("prototype mode requires document text; use cache for ID-only rows")
-            ids, token_mask, document_mask = _pad_documents(docs, self.enc_pad_id)
-            out.update(document_input_ids=ids, document_token_mask=token_mask,
-                       document_mask=document_mask)
         return out
 
 
-Collator = QuROCollator
-
-
 def move_to_device(batch: Dict[str, Any], device):
-    out = dict(batch)
-    for key, value in batch.items():
-        if torch.is_tensor(value):
-            out[key] = value.to(device)
-    return out
+    return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
 
 
-def build_toy_tokenizer(paths: Sequence[str], data_cfg, save_to: Optional[str] = None):
+def build_toy_tokenizer(paths_: Sequence[str], data_cfg, save_to: Optional[str] = None):
+    """Vocabulary must cover every split, or held-out answers become UNK."""
     from .toy import ToyTokenizer
-    texts = [data_cfg.qa_prompt_template.format(query="")]
-    for path in dict.fromkeys(paths):
+    texts: List[str] = []
+    for path in dict.fromkeys(paths_):
         if not path or not os.path.exists(path):
             continue
         for i, raw in enumerate(read_jsonl(path)):
             row = adapt_row(raw, data_cfg, i)
-            texts += row["documents"] + [row["query"], row["target"]] + row["answers"]
-    tokenizer = ToyTokenizer.build_from_texts(texts)
+            texts += [row["query"], row["target"]] + row["answers"]
+    tokenizer = ToyTokenizer.build_from_texts(texts or ["placeholder"])
     if save_to:
         tokenizer.save(save_to)
     return tokenizer
-
-
-def encode_with_offsets(tokenizer, text: str) -> Tuple[List[int], List[Tuple[int, int]]]:
-    if hasattr(tokenizer, "itos"):
-        from .toy import _TOKEN_RE
-        matches = list(_TOKEN_RE.finditer(text))
-        ids = [tokenizer.stoi.get(x.group(0), tokenizer.stoi["<unk>"]) for x in matches]
-        return ids, [(x.start(), x.end()) for x in matches]
-    encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
-    return encoded["input_ids"], [tuple(x) for x in encoded["offset_mapping"]]

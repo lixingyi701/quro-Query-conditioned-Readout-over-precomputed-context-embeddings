@@ -1,210 +1,152 @@
-# QuRO v0.0
+# QuRO v0.1
 
 **Query-conditioned Readout over precomputed context embeddings**
 
-QuRO separates context compression into a reusable offline representation and a
-small query-time readout:
-
-The implementation follows the repository's
-[experimental design](article/QURO_EXPERIMENTAL_DESIGN.md); the accompanying
-[related-work analysis](article/QURO_RELATED_WORK.md) explains the distinction
-from PISCO, COCOM, SeleCom, and other compression baselines.
+Existing soft compressors face a cacheability–specificity dilemma. Query-agnostic
+compressors (COCOM, PISCO) are reusable but must preserve information for
+questions they have not seen. Query-conditioned selectors (SeleCom) keep exactly
+the right evidence but re-read the source document on every query. QuRO
+factorises the two roles across *time*: a reusable query-independent document
+memory built once offline, and a lightweight query-conditioned readout that never
+revisits source tokens.
 
 ```text
 offline, once per document
-document d_i -> frozen PISCO / COCOM -> Z_i (m, h) -> sharded disk cache
+    d  --frozen PISCO/COCOM-->  Z_d in R^(m x h)  -->  sharded disk cache
 
 online, once per query
-retrieved IDs -> Z (K, m, h) -> flatten (K*m, h)
-natural-language query -> B structured output queries
-CrossAttention(Q=query-conditioned slots, K/V=Z) -> B soft tokens -> generator
+    retrieved IDs      -->  Z in R^(K*m x h)          (free: a disk read)
+    query tokens       -->  B output queries
+    CrossAttn(Q, Z, Z) -->  B soft tokens  -->  frozen Mistral + LoRA  -->  answer
 ```
 
-This directory is version **0.0.0**: it implements and tests the architectural
-contract. It does not contain paper results or claim that QuRO already beats
-SeleCom, PISCO, COCOM, or ArcAligner.
+Online attention cost is `O(B * K * m)` and does not depend on the original
+document lengths. That is the whole basis of the efficiency argument.
 
-## What v0.0 implements
+See [`article/QURO_EXPERIMENTAL_DESIGN.md`](article/QURO_EXPERIMENTAL_DESIGN.md)
+for the experiment plan and [`article/QURO_V0.1_IMPLEMENTATION_PLAN.md`](article/QURO_V0.1_IMPLEMENTATION_PLAN.md)
+for what this version implements and why.
 
-- Independent per-document latent representation `(m, h)`.
-- Sharded `doc_id -> latent` disk cache with a manifest and source-token counts.
-- Multi-document online interface `(batch, K, m, h) -> (batch, K*m, d)`.
-- Learned retrieval-rank/document-source embeddings.
-- Perceiver IO readout with query-constructor families:
-  - `agnostic`: learned slots only (Ablation A).
-  - `add` / `film`: pooled-query conditioning.
-  - `concat`: projected `[slot; pooled query]`, the explicit e_q plus P variant.
-  - `xattn`: semantic slots first cross-attend to query tokens.
-- Fixed B and query-conditioned discrete budget buckets.
-- Optional identity/linear/MLP bridge to the generator embedding space.
-- Frozen generator backbone with optional generator LoRA.
-- Sequence-level distillation through a `teacher_output` field.
-- Mismatch-query causal control.
-- EM, token F1, substring accuracy, source-token count, readout-token count,
-  and effective generator-side compression `xi_eff`.
+## What v0.1 adds over v0.0
 
-The old single-document Perceiver encoder is retained only as a smoke-test and
-cache-construction prototype. Cache-backed experiments are the QuRO path.
+v0.0 implemented the architectural contract against a randomly initialised
+prototype encoder, so none of its numbers meant anything. v0.1 connects real
+components:
 
-## Stable interfaces
+- **Real frozen compressors.** `naver/pisco-mistral` (rate 16 → `m=8`, `h=4096`)
+  and `naver/cocom-v1-{4,16,128}-mistral-7b`, all on the same Mistral base, so
+  sweeping the offline rate introduces no confound.
+- **The generator is PISCO's own decoder.** Mistral-7B-Instruct-v0.2 plus the
+  published `decoder_adapter`, with PISCO's prompt template and `B` memory slots
+  instead of `K*m`. A PISCO baseline is then literally the same object with a
+  different readout.
+- **Residual readout.** `E = s * AttnPool(alpha, Z) + Delta` with `Delta`
+  zero-initialised, so step 0 *is* attention-pooled PISCO and every point gained
+  afterwards is attributable to query conditioning. It also matches the scale of
+  the cached latents (measured std ≈ 1.9), which a LayerNorm'd output would not.
+- **Slot self-attention** in each readout block, so the `B` output slots can
+  avoid all reading the same evidence.
+- **Budget dropout.** `B` is sampled per step, which makes the nested slot
+  structure that `slots[:B]` assumes actually true, so one checkpoint serves
+  every budget.
+- **Decoder input modes D0–D3** and `--query_text_dropout`, for the question
+  "now that the soft tokens are query-conditioned, does the decoder still need the
+  question in plain text?"
 
-### Latent cache
+## Setup
 
-Each cached document has exactly one tensor:
+`/home` on this machine is a full shared disk, so weights, caches and run outputs
+live under `QURO_ROOT`. Paths are resolved in [`src/paths.py`](src/paths.py) and
+every one is overridable by environment variable.
 
-```python
-Z_d.shape == (m, h)
 ```
-
-The cache manifest records compressor/checkpoint identity, m, h, dtype,
-document location, and source-token count. Unknown retrieved IDs raise an error;
-evidence is never silently discarded.
-
-```python
-from src.cache import LatentCache
-
-cache = LatentCache("/path/to/cache")
-latents, document_mask, source_counts = cache.get_many([
-    ["doc-17", "doc-42"],
-    ["doc-9"],
-])
-# latents:       (2, 2, m, h)
-# document_mask: (2, 2)
+QURO_ROOT=/data02/quro
+  ├── models/   pisco-mistral, cocom-v1-{4,16,128}-mistral-7b
+  ├── data/     corpus.jsonl, train.jsonl, dev.jsonl
+  ├── cache/    gonogo-pisco-r16/ ...
+  └── runs/     gonogo_{A,C,S,P}_*/
 ```
-
-### Online readout
-
-```python
-result = model.readout_cached(
-    doc_latents=latents,
-    document_mask=document_mask,
-    query_ids=query_ids,
-    query_mask=query_mask,
-    budget=[8, 16],
-)
-
-soft_tokens = result["soft_tokens"]
-soft_token_mask = result["soft_token_mask"]
-```
-
-The readout cost is `O(B*K*m)` and is independent of original document length.
-
-## Preparing a PISCO/COCOM cache
-
-QuRO does not copy or guess private APIs from research repositories. An adapter
-factory must return either a callable or an object exposing:
-
-```python
-encode_texts(list_of_strings) -> Tensor[batch, m, h]
-```
-
-The returned model is forced into evaluation mode and all module parameters are
-frozen.
-
-```bash
-python scripts/build_latent_cache.py \
-  --documents data/corpus.jsonl \
-  --adapter my_pisco_adapter:build \
-  --checkpoint /models/pisco-checkpoint \
-  --out_dir cache/pisco \
-  --dtype float16
-```
-
-`data/corpus.jsonl`:
-
-```json
-{"doc_id": "wiki:123", "text": "Document text ...", "source_token_count": 128}
-```
-
-If PISCO/COCOM latents were already exported:
-
-```bash
-python scripts/import_latent_cache.py \
-  --input exported_latents.pt \
-  --compressor naver/pisco-checkpoint \
-  --out_dir cache/pisco
-```
-
-Accepted exports are `{doc_id: tensor(m,h)}` or a dictionary containing
-`doc_ids`, `latents`, and optional `source_token_counts`.
-
-## Query/training data
-
-Cache-first JSONL:
-
-```json
-{
-  "id": "nq-001",
-  "query": "Who designed the building?",
-  "retrieved_doc_ids": ["wiki:123", "wiki:891"],
-  "answers": ["Jane Doe"],
-  "teacher_output": "Jane Doe designed the building.",
-  "budget": 8
-}
-```
-
-- `teacher_output` is preferred over `answers` and produces sequence-level
-  teacher-sequence CE.
-- `answers` are retained for evaluation.
-- `budget` is optional for fixed-budget runs. Adaptive-budget training requires
-  a discrete bucket label on every training row.
-- Every retrieved ID in every split must exist in the selected cache.
-
-## Training
-
-```bash
-export CACHE_DIR=/data/cache/pisco
-export RAG_TRAIN_FILE=/data/quro/train.jsonl
-export RAG_DEV_FILE=/data/quro/dev.jsonl
-export ENCODER_PATH=/models/Qwen3-Embedding-0.6B
-export GENERATOR_PATH=/models/Qwen2.5-1.5B-Instruct
-
-bash scripts/run_qwen3emb.sh
-```
-
-Main trainable components in cache mode are the query constructor, source
-embeddings, readout, optional projector, supervised budget controller, and
-generator LoRA. The query encoder and offline compressor are frozen; the
-offline compressor is not loaded during online training.
-
-Core A-vs-C/D ablation:
-
-```bash
-CACHE_DIR=... RAG_TRAIN_FILE=... RAG_DEV_FILE=... \
-  BS_LIST="4 8 16 32" bash scripts/run_ablation.sh
-```
-
-## Local contract test
 
 ```bash
 pip install -r requirements.txt
-python tests/test_shapes.py
+python -c "from huggingface_hub import snapshot_download as d; \
+  d('naver/pisco-mistral', local_dir='/data02/quro/models/pisco-mistral')"
 ```
 
-The test covers independent multi-document encoding, K*m online memory
-construction and masking, query sensitivity, Ablation A, per-example discrete
-budgets, sharded cache round-trip, teacher-output selection, and gradient flow.
+`pisco-mistral` is only 0.69 GB: it ships adapters plus the resized first/last
+layers and loads Mistral separately. `src/compressors/pisco.py:ensure_local_base`
+rewrites `decoder_model_name` in the downloaded config to point at the local
+Mistral copy, so nothing is re-downloaded and loading works offline.
+
+## Running
+
+```bash
+bash scripts/run_smoke.sh          # ~15 min: contract tests, cache, regression, short train
+bash scripts/run_gonogo.sh 1       # arms A / C / S / P, one per GPU
+bash scripts/run_gonogo.sh 2       # the query-text-dropout arms
+python scripts/summarize.py        # table + go/no-go verdict
+```
+
+Data preparation and cache building, if you want them separately:
+
+```bash
+python scripts/prepare_selecom_data.py --out_dir /data02/quro/data/gonogo \
+  --stage1_rows 80000 --stage2_rows 20000
+python scripts/build_latent_cache.py \
+  --documents /data02/quro/data/gonogo/corpus.jsonl \
+  --out_dir /data02/quro/cache/gonogo-pisco-r16 \
+  --adapter src.compressors.pisco:build --resume
+python scripts/check_rag_data.py /data02/quro/data/gonogo/*.jsonl \
+  --cache_dir /data02/quro/cache/gonogo-pisco-r16
+```
+
+Throughput on one A800: ~60 documents/s to compress, so the 261k-document
+go/no-go corpus takes about 75 minutes and 17 GB at fp16.
+
+## Correctness checks
+
+```bash
+python tests/test_shapes.py                  # 31 CPU contract tests, no downloads
+python scripts/check_pisco_equivalence.py    # QuRO degenerated to PISCO vs PISCO itself
+```
+
+The equivalence check is the strongest single test: with `readout=pisco_direct`
+and no training, QuRO must reproduce PISCO's answers, which validates the cache
+round-trip, prompt template, slot indexing and embedding injection at once.
+
+Expect agreement around 70–90%, not 100%. PISCO's compression is deterministic
+for a fixed batch but not across batch sizes — measured here, one document
+compressed in a batch of 16 versus 64 differs by up to 0.66 absolute (mean 0.024)
+at cosine similarity ≥ 0.9997, and greedy decoding over a 7B bf16 model turns that
+into the occasional synonym swap. Two consequences: the PISCO baseline must read
+the *same cache* rather than recompress, and single-example comparisons between
+systems are noise.
 
 ## Compression accounting
 
-Results record three distinct quantities:
+Three distinct quantities, none of which substitutes for another:
 
-- Offline compression: `xi_off = source tokens / m`.
-- Online generator budget: `B`.
-- Effective generator-side compression:
-  `xi_eff = sum(source tokens over retrieved documents) / B`.
+- `xi_off = fed tokens / m` — offline; paid in storage, once per document.
+- `B` — soft tokens the generator sees; paid per query at prefill.
+- `xi_eff = sum(fed tokens over retrieved docs) / B` — the only one that makes two
+  systems comparable, because it is measured where the cost is paid.
 
-Baseline comparisons must lock B/xi_eff; storage cost must be reported
-separately.
+`fed tokens` means tokens the compressor actually consumed. PISCO truncates every
+document at 128 tokens (its model card recommends passages cropped to ~128), and
+SeleCom's documents average 180 Mistral tokens, so **about a third of each
+document never reaches the compressor**. The cache records both the fed and the
+untruncated count so this stays visible; computing `xi_off` against untruncated
+length would inflate 15.1× into 22.5×.
 
-## Deliberately not claimed in v0.0
+Main-table comparisons lock `B`. Storage cost is reported separately, never
+netted off.
 
-- A finalized built-in PISCO/COCOM adapter: their current research APIs need to
-  be pinned and validated on the target server first.
-- A trained overflow-risk probe or learned labels for adaptive budgets.
-- Oracle-selection/oracle-capacity decomposition.
-- Uncompressed RAG, non-parametric top-B, SeleCom, and ArcAligner result tables.
-- TTFT/GFLOPs/amortization crossover measurements.
-- Evidence-token attribution inside opaque external latents.
+## Not claimed in v0.1
 
-These are the next go/no-go experiments, not hidden completed features.
+- The `xi_off` sweep over COCOM rate 4/16/128 (checkpoints not yet downloaded).
+- Token-overflow probing, oracle selection/capacity decomposition.
+- Adaptive budget training (the selector and loss exist; the labels do not).
+- TTFT / GFLOPs / the amortisation crossover `q*`.
+- LLM-judge scoring, and every dataset beyond the SeleCom splits and TriviaQA.
+
+These are the next experiments, not hidden features.

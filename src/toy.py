@@ -22,16 +22,35 @@ import torch.nn.functional as F
 _TOKEN_RE = re.compile(r"\w+|[^\w\s]")
 
 PAD, BOS, EOS, UNK = "<pad>", "<bos>", "<eos>", "<unk>"
+SEP = "<SEP>"
+DEFAULT_MEM_TOKENS = 8
+
+
+def _mem_token_names(n: int) -> List[str]:
+    return [f"<MEM{i}>" for i in range(n)]
 
 
 class ToyTokenizer:
-    """词级别 tokenizer，词表从语料现场构建并存成 json。"""
+    """词级别 tokenizer，词表从语料现场构建并存成 json。
 
-    def __init__(self, vocab: Optional[List[str]] = None):
-        specials = [PAD, BOS, EOS, UNK]
+    也实现了 memory-slot 与 chat 模板接口，使 CPU 契约测试与真实 PISCO 训练
+    走同一条 prompt 装配路径（``src/prompt.py``），而不是两套分叉的代码。
+    """
+
+    def __init__(self, vocab: Optional[List[str]] = None, n_mem_tokens: int = DEFAULT_MEM_TOKENS):
+        specials = [PAD, BOS, EOS, UNK] + _mem_token_names(n_mem_tokens) + [SEP]
         vocab = vocab or []
         self.itos: List[str] = specials + [t for t in vocab if t not in specials]
         self.stoi = {t: i for i, t in enumerate(self.itos)}
+        self._bind_specials(n_mem_tokens)
+
+    def _bind_specials(self, n_mem_tokens: int):
+        self.mem_tokens = _mem_token_names(n_mem_tokens)
+        self.mem_token_ids = [self.stoi[t] for t in self.mem_tokens]
+        self.sep_token = SEP
+        self.sep_token_id = self.stoi[SEP]
+        self._special_re = re.compile(
+            "(" + "|".join(re.escape(t) for t in self.mem_tokens + [SEP]) + ")")
 
     # ---- HF 风格属性 ----
     @property
@@ -64,10 +83,33 @@ class ToyTokenizer:
         return cls(vocab)
 
     def encode(self, text: str, add_special_tokens: bool = False) -> List[int]:
-        ids = [self.stoi.get(t, self.stoi[UNK]) for t in _TOKEN_RE.findall(text)]
+        ids: List[int] = []
+        for chunk in self._special_re.split(text):
+            if not chunk:
+                continue
+            if chunk in self.stoi and self._special_re.fullmatch(chunk):
+                ids.append(self.stoi[chunk])          # memory slots stay atomic
+            else:
+                ids += [self.stoi.get(t, self.stoi[UNK]) for t in _TOKEN_RE.findall(chunk)]
         if add_special_tokens:
             ids = [self.bos_token_id] + ids + [self.eos_token_id]
         return ids
+
+    def __call__(self, text, add_special_tokens: bool = False,
+                 truncation: bool = False, max_length: Optional[int] = None, **kwargs):
+        """Minimal Hugging Face tokenizer call signature."""
+        texts = [text] if isinstance(text, str) else list(text)
+        out = [self.encode(t, add_special_tokens=add_special_tokens) for t in texts]
+        if truncation and max_length:
+            out = [ids[:max_length] for ids in out]
+        return {"input_ids": out[0] if isinstance(text, str) else out}
+
+    def apply_chat_template(self, messages, tokenize: bool = False,
+                            add_generation_prompt: bool = True) -> str:
+        if tokenize:
+            raise NotImplementedError("toy tokenizer only renders templates as text")
+        body = "\n".join(f"[{m['role']}] {m['content']}" for m in messages)
+        return body + ("\n[assistant]" if add_generation_prompt else "")
 
     def decode(self, ids: Sequence[int], skip_special_tokens: bool = True) -> str:
         toks = []
@@ -92,6 +134,7 @@ class ToyTokenizer:
         tok = cls()
         tok.itos = itos
         tok.stoi = {t: i for i, t in enumerate(itos)}
+        tok._bind_specials(sum(1 for t in itos if t.startswith("<MEM")))
         return tok
 
 

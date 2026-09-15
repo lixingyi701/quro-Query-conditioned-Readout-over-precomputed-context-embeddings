@@ -11,3 +11,8 @@ cache/
 .venv/
 .env
 data/rag/
+.claude/
+
+# Symlink to QURO_ROOT (/data02/quro): model weights, latent caches, run outputs.
+# /home is a shared disk that runs full, so nothing large may live in the repo.
+workspace

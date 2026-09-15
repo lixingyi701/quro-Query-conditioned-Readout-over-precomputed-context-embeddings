@@ -1,68 +1,136 @@
-"""
-构建 tokenizer + generator。tiny 用内置 ToyCausalLM，其余走 HuggingFace。
+"""Build the generator stack: the causal LM that consumes QuRO's soft tokens.
+
+For the main experiments the generator is *PISCO's own decoder* -- Mistral-7B-Instruct-v0.2
+with the published ``decoder_adapter`` and an embedding table already resized for
+the ``<MEM*>/<SEP>`` tokens.  Reusing it rather than loading a fresh Mistral buys
+three things at once:
+
+* a warm start -- the decoder already reads soft tokens in this exact space, so
+  QuRO begins near a working system instead of at random;
+* an airtight baseline -- PISCO and QuRO then share backbone, prompt and LoRA
+  initialisation, and differ only in how latents reach the decoder;
+* the memory-slot vocabulary the prompt builder needs.
+
+``toy`` keeps the whole pipeline runnable on CPU with no downloads, exercising the
+same prompt and readout code paths as the real stack.
 """
 
 from __future__ import annotations
 
+import math
 import os
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
+import torch.nn as nn
+
+from . import paths
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
-
-def build_tokenizer_and_generator(cfg) -> Tuple[object, torch.nn.Module]:
-    g = cfg.generator
-
-    if g.name_or_path == "toy":
-        from .data import build_toy_tokenizer
-        from .toy import build_toy
-
-        # 词表覆盖全部 split：留出文档里的答案词若不在词表就会变成 UNK，泛化实验直接失效。
-        # 这不是标签泄漏——真实场景里 tokenizer 本来就是固定的、开放词表的。
-        paths = cfg.data.vocab_files
-        os.makedirs(cfg.train.out_dir, exist_ok=True)
-        tok = build_toy_tokenizer(paths, cfg.data,
-                                  save_to=os.path.join(cfg.train.out_dir, "toy_tokenizer.json"))
-        gen = build_toy(len(tok), g)
-    else:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        tok = AutoTokenizer.from_pretrained(g.name_or_path, trust_remote_code=g.trust_remote_code)
-        if tok.pad_token_id is None:
-            tok.pad_token = tok.eos_token
-        kwargs = dict(torch_dtype=DTYPES[g.dtype], trust_remote_code=g.trust_remote_code)
-        if g.attn_implementation:
-            kwargs["attn_implementation"] = g.attn_implementation
-        gen = AutoModelForCausalLM.from_pretrained(g.name_or_path, **kwargs)
-
-    # ``freeze`` refers to the base model.  LoRA parameters remain trainable and
-    # are saved separately by QuRO; this preserves the cache-compatible frozen
-    # generator backbone while still teaching it to consume readout embeddings.
-    if g.freeze or g.lora:
-        for p in gen.parameters():
-            p.requires_grad_(False)
-    if g.lora:
-        if g.name_or_path == "toy":
-            raise ValueError("generator LoRA is only supported for Hugging Face models")
-        try:
-            from peft import LoraConfig, get_peft_model
-        except ImportError as e:
-            raise ImportError("generator LoRA requires peft: pip install peft") from e
-        gen = get_peft_model(gen, LoraConfig(
-            r=g.lora_r,
-            lora_alpha=g.lora_alpha,
-            lora_dropout=g.lora_dropout,
-            target_modules=list(g.lora_targets),
-            bias="none",
-            task_type="CAUSAL_LM",
-        ))
-        gen.print_trainable_parameters()
-    elif g.freeze:
-        gen.eval()
-    return tok, gen
+GENERATOR_LORA_INITS = ("pisco", "random", "frozen")
 
 
-def generator_hidden_size(gen) -> int:
-    return int(gen.config.hidden_size)
+@dataclass
+class GeneratorStack:
+    lm: nn.Module
+    tokenizer: object
+    query_tokenizer: object
+    n_mem_tokens: int
+    cocom: Optional[nn.Module] = None     # full PISCO object, for cache building / baselines
+
+
+def _reset_lora_parameters(lm, adapter_name: str) -> int:
+    """Re-initialise one adapter to PEFT's default, discarding the trained weights.
+
+    This is the control arm for "did the warm start do the work?", so it must
+    really discard the published weights rather than perturb them.
+    """
+    reset = 0
+    for name, parameter in lm.named_parameters():
+        if adapter_name not in name:
+            continue
+        with torch.no_grad():
+            if "lora_A" in name:
+                nn.init.kaiming_uniform_(parameter, a=math.sqrt(5))
+                reset += 1
+            elif "lora_B" in name:
+                parameter.zero_()
+                reset += 1
+    return reset
+
+
+def _configure_generator_training(lm, lora_init: str, adapter_name: str = "decoder_adapter"):
+    """Freeze the backbone and expose only the chosen adapter to the optimiser."""
+    if lora_init not in GENERATOR_LORA_INITS:
+        raise ValueError(f"generator_lora_init must be one of {GENERATOR_LORA_INITS}")
+    for parameter in lm.parameters():
+        parameter.requires_grad_(False)
+    if lora_init == "frozen":
+        lm.eval()
+        return 0
+    if lora_init == "random":
+        _reset_lora_parameters(lm, adapter_name)
+    trainable = 0
+    for name, parameter in lm.named_parameters():
+        if adapter_name in name and ("lora_A" in name or "lora_B" in name):
+            parameter.requires_grad_(True)
+            trainable += parameter.numel()
+    if trainable == 0:
+        raise RuntimeError(
+            f"no LoRA parameters found for adapter {adapter_name!r}; "
+            "the checkpoint may not carry adapters")
+    return trainable
+
+
+def build_pisco_stack(cfg) -> GeneratorStack:
+    from .compressors.pisco import build_generator
+
+    checkpoint = cfg.generator.name_or_path or paths.PISCO_MISTRAL
+    device = cfg.generator.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    cocom = build_generator(checkpoint, device=device, dtype=cfg.generator.dtype)
+
+    lm = cocom.decoder
+    # PISCO ships two adapters; only the decoder one belongs on the generation
+    # path (the encoder one is the compressor, which QuRO never runs online).
+    if "decoder_adapter" in getattr(cocom, "adapter_keys", []):
+        lm.set_adapter("decoder_adapter")
+    # PISCO trains its <MEM*> embeddings; QuRO overwrites those positions with
+    # readout outputs, so they are inert here and must not collect gradients.
+    lm.get_input_embeddings().weight.requires_grad_(False)
+
+    trainable = _configure_generator_training(lm, cfg.generator.lora_init)
+    print(f"[generator] pisco decoder: {trainable/1e6:.2f}M trainable LoRA params "
+          f"(init={cfg.generator.lora_init})")
+
+    query_tokenizer = cocom.decoder_tokenizer
+    if cfg.query_encoder.kind == "hf":
+        from .hf_encoder import build_encoder_tokenizer
+        query_tokenizer = build_encoder_tokenizer(cfg.query_encoder)
+    return GeneratorStack(lm=lm, tokenizer=cocom.decoder_tokenizer,
+                          query_tokenizer=query_tokenizer,
+                          n_mem_tokens=int(cocom.n_mem_tokens), cocom=cocom)
+
+
+def build_toy_stack(cfg) -> GeneratorStack:
+    from .data import build_toy_tokenizer
+    from .toy import build_toy
+
+    os.makedirs(cfg.train.out_dir, exist_ok=True)
+    tokenizer = build_toy_tokenizer(
+        cfg.data.vocab_files, cfg.data,
+        save_to=os.path.join(cfg.train.out_dir, "toy_tokenizer.json"))
+    lm = build_toy(len(tokenizer), cfg.generator)
+    for parameter in lm.parameters():
+        parameter.requires_grad_(cfg.generator.lora_init != "frozen")
+    return GeneratorStack(lm=lm, tokenizer=tokenizer, query_tokenizer=tokenizer,
+                          n_mem_tokens=len(tokenizer.mem_tokens))
+
+
+def build_generator_stack(cfg) -> GeneratorStack:
+    if cfg.generator.kind == "pisco":
+        return build_pisco_stack(cfg)
+    if cfg.generator.kind == "toy":
+        return build_toy_stack(cfg)
+    raise ValueError(f"unknown generator kind: {cfg.generator.kind}")

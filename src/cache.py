@@ -27,6 +27,13 @@ class CacheMetadata:
     hidden_size: int
     dtype: str
     format_version: int = CACHE_FORMAT_VERSION
+    # Offline-compression provenance.  ``compr_rate`` and ``doc_max_length`` are
+    # what make xi_off computable after the fact: PISCO truncates every document
+    # at doc_max_length, so the ratio must be taken against the tokens the
+    # compressor actually consumed, never against the untruncated document.
+    compr_rate: Optional[int] = None
+    doc_max_length: Optional[int] = None
+    checkpoint: Optional[str] = None
 
 
 def _safe_torch_load(path: str, map_location="cpu"):
@@ -46,6 +53,7 @@ class LatentCacheWriter:
         metadata: CacheMetadata,
         shard_size: int = 1024,
         overwrite: bool = False,
+        resume: bool = False,
     ):
         if shard_size < 1:
             raise ValueError("shard_size must be positive")
@@ -53,16 +61,41 @@ class LatentCacheWriter:
         self.metadata = metadata
         self.shard_size = shard_size
         manifest_path = os.path.join(self.root, "manifest.json")
-        if os.path.exists(manifest_path) and not overwrite:
-            raise FileExistsError(f"cache already exists: {manifest_path}")
+        restored: Dict[str, object] = {}
+        if os.path.exists(manifest_path):
+            if resume:
+                # Compressing a large corpus takes hours; losing it to one crash
+                # is not acceptable, so an interrupted run can be continued.
+                with open(manifest_path, encoding="utf-8") as f:
+                    restored = json.load(f)
+                for field in ("compressor", "latent_size", "hidden_size", "dtype"):
+                    if restored.get(field) != getattr(metadata, field):
+                        raise ValueError(
+                            f"cannot resume {manifest_path}: {field} is "
+                            f"{restored.get(field)!r}, expected {getattr(metadata, field)!r}")
+            elif not overwrite:
+                raise FileExistsError(f"cache already exists: {manifest_path}")
         os.makedirs(self.root, exist_ok=True)
         self._ids: List[str] = []
         self._latents: List[torch.Tensor] = []
         self._token_counts: List[int] = []
-        self._documents: Dict[str, Dict[str, int]] = {}
-        self._shards: List[Dict[str, object]] = []
+        self._original_counts: List[int] = []
+        self._documents: Dict[str, Dict[str, int]] = dict(restored.get("documents", {}))
+        self._shards: List[Dict[str, object]] = list(restored.get("shards", []))
 
-    def add(self, doc_id: str, latents: torch.Tensor, source_token_count: int) -> None:
+    @property
+    def cached_ids(self) -> "set[str]":
+        """IDs already on disk; a resumed run skips re-compressing them."""
+        return set(self._documents)
+
+    def add(self, doc_id: str, latents: torch.Tensor, source_token_count: int,
+            original_token_count: Optional[int] = None) -> None:
+        """Store one document latent.
+
+        ``source_token_count`` is what the compressor consumed (post-truncation)
+        and is the denominator for xi_off; ``original_token_count`` records how
+        long the document really was, so truncation loss stays visible.
+        """
         doc_id = str(doc_id)
         if not doc_id:
             raise ValueError("doc_id must be non-empty")
@@ -76,6 +109,8 @@ class LatentCacheWriter:
         self._ids.append(doc_id)
         self._latents.append(latents.detach().to(device="cpu", dtype=getattr(torch, self.metadata.dtype)))
         self._token_counts.append(int(source_token_count))
+        self._original_counts.append(int(source_token_count if original_token_count is None
+                                         else original_token_count))
         if len(self._ids) >= self.shard_size:
             self.flush()
 
@@ -88,6 +123,7 @@ class LatentCacheWriter:
             "doc_ids": list(self._ids),
             "latents": torch.stack(self._latents, dim=0),
             "source_token_counts": torch.tensor(self._token_counts, dtype=torch.long),
+            "original_token_counts": torch.tensor(self._original_counts, dtype=torch.long),
         }
         tmp = os.path.join(self.root, filename + ".tmp")
         torch.save(payload, tmp)
@@ -97,9 +133,11 @@ class LatentCacheWriter:
                 "shard": shard_idx,
                 "row": row,
                 "source_token_count": self._token_counts[row],
+                "original_token_count": self._original_counts[row],
             }
         self._shards.append({"file": filename, "count": len(self._ids)})
-        self._ids, self._latents, self._token_counts = [], [], []
+        self._ids, self._latents = [], []
+        self._token_counts, self._original_counts = [], []
 
     def close(self) -> str:
         self.flush()
@@ -141,6 +179,9 @@ class LatentCache:
             hidden_size=int(self.manifest["hidden_size"]),
             dtype=self.manifest["dtype"],
             format_version=version,
+            compr_rate=self.manifest.get("compr_rate"),
+            doc_max_length=self.manifest.get("doc_max_length"),
+            checkpoint=self.manifest.get("checkpoint"),
         )
         self.documents: Dict[str, Dict[str, int]] = self.manifest["documents"]
         self.shards: List[Dict[str, object]] = self.manifest["shards"]
