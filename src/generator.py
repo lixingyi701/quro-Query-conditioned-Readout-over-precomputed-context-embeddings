@@ -61,6 +61,22 @@ def _reset_lora_parameters(lm, adapter_name: str) -> int:
     return reset
 
 
+def detect_adapter_name(lm) -> str:
+    """Name of the adapter that belongs on the generation path.
+
+    PISCO ships two named adapters and only ``decoder_adapter`` is for decoding.
+    COCOM v1 calls ``get_peft_model`` without a name, so PEFT registers it as
+    ``default``.  Hardcoding either one breaks the other, and the generator has to
+    match whichever compressor produced the cache.
+    """
+    names = list(getattr(lm, "peft_config", {}) or {})
+    if "decoder_adapter" in names:
+        return "decoder_adapter"
+    if names:
+        return names[0]
+    raise ValueError("the generator checkpoint carries no LoRA adapters")
+
+
 def _configure_generator_training(lm, lora_init: str, adapter_name: str = "decoder_adapter"):
     """Freeze the backbone and expose only the chosen adapter to the optimiser."""
     if lora_init not in GENERATOR_LORA_INITS:
@@ -94,15 +110,16 @@ def build_pisco_stack(cfg) -> GeneratorStack:
     lm = cocom.decoder
     # PISCO ships two adapters; only the decoder one belongs on the generation
     # path (the encoder one is the compressor, which QuRO never runs online).
-    if "decoder_adapter" in getattr(cocom, "adapter_keys", []):
-        lm.set_adapter("decoder_adapter")
+    adapter_name = detect_adapter_name(lm)
+    if adapter_name in getattr(cocom, "adapter_keys", []) or adapter_name != "default":
+        lm.set_adapter(adapter_name)
     # PISCO trains its <MEM*> embeddings; QuRO overwrites those positions with
     # readout outputs, so they are inert here and must not collect gradients.
     lm.get_input_embeddings().weight.requires_grad_(False)
 
-    trainable = _configure_generator_training(lm, cfg.generator.lora_init)
+    trainable = _configure_generator_training(lm, cfg.generator.lora_init, adapter_name)
     print(f"[generator] pisco decoder: {trainable/1e6:.2f}M trainable LoRA params "
-          f"(init={cfg.generator.lora_init})")
+          f"(init={cfg.generator.lora_init}, adapter={adapter_name})")
 
     # COCOM v1 carries neither n_mem_tokens nor a doc_max_length in its config,
     # so the slot-block size has to be supplied.  It only sets how many memory
