@@ -153,6 +153,9 @@ class GeneratorConfig:
     # "random" : re-initialise the adapter -- the control for "was it the warm start?"
     # "frozen" : train nothing in the decoder -- isolates the readout's contribution
     lora_init: str = "pisco"
+    # Slots per document block in the prompt.  PISCO exposes it; COCOM v1 does
+    # not, and its config has no doc_max_length to derive it from.
+    n_mem_tokens: Optional[int] = None
 
     toy_n_layer: int = 4
     toy_n_head: int = 4

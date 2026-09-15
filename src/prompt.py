@@ -54,8 +54,21 @@ class PiscoPromptBuilder:
         self.mode = mode
         self.system_prompt = system_prompt
         self.n_mem_tokens = int(n_mem_tokens)
-        self.mem_tokens: Sequence[str] = tokenizer.mem_tokens
-        self.mem_token_ids = set(tokenizer.mem_token_ids)
+        # PISCO gives each slot its own trained token (<MEM0>..<MEM7>); COCOM v1
+        # reuses a single <MEM>.  Both have to work, because the generator must
+        # match whichever compressor produced the cache -- COCOM latents come out
+        # of COCOM's adapted Mistral and PISCO's decoder was never trained to read
+        # them.
+        mem_tokens = getattr(tokenizer, "mem_tokens", None)
+        if mem_tokens is None:
+            single = getattr(tokenizer, "mem_token", None)
+            if single is None:
+                raise ValueError("tokenizer exposes neither mem_tokens nor mem_token")
+            self.mem_tokens = [single] * self.n_mem_tokens
+            self.mem_token_ids = {int(tokenizer.mem_token_id)}
+        else:
+            self.mem_tokens = list(mem_tokens)
+            self.mem_token_ids = set(tokenizer.mem_token_ids)
         self.sep_token = getattr(tokenizer, "sep_token", "")
         # RG must show the decoder the *same* text the compressor consumed, or it
         # stops being an upper bound over the same evidence and becomes a

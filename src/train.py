@@ -101,6 +101,13 @@ def build_args():
                     choices=["D0", "D1", "D2", "D3", "AG", "RG"], default=None)
     ap.add_argument("--query_text_dropout", type=float, default=None)
     ap.add_argument("--generator_lora_init", choices=["pisco", "random", "frozen"], default=None)
+    ap.add_argument("--generator_path", default=None,
+                    help="checkpoint for the generator. Must match the compressor that "
+                         "produced the cache: COCOM latents come from COCOM's adapted "
+                         "Mistral and PISCO's decoder was never trained to read them.")
+    ap.add_argument("--generator_n_mem", type=int, default=None,
+                    help="slots per document block; required for COCOM v1, which "
+                         "exposes neither n_mem_tokens nor doc_max_length")
 
     ap.add_argument("--cache_dir", default=None)
     ap.add_argument("--corpus", nargs="*", default=None,
@@ -169,6 +176,10 @@ def apply_overrides(cfg, args):
         cfg.decoder.query_text_dropout = args.query_text_dropout
     if args.generator_lora_init:
         cfg.generator.lora_init = args.generator_lora_init
+    if args.generator_path:
+        cfg.generator.name_or_path = args.generator_path
+    if args.generator_n_mem is not None:
+        cfg.generator.n_mem_tokens = args.generator_n_mem
     if args.eval_files:
         cfg.data.eval_files = parse_eval_files(args.eval_files)
     cfg.data.prefer_teacher_output = cfg.train.prefer_teacher_output

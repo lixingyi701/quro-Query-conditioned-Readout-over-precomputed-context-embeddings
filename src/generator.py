@@ -104,13 +104,22 @@ def build_pisco_stack(cfg) -> GeneratorStack:
     print(f"[generator] pisco decoder: {trainable/1e6:.2f}M trainable LoRA params "
           f"(init={cfg.generator.lora_init})")
 
+    # COCOM v1 carries neither n_mem_tokens nor a doc_max_length in its config,
+    # so the slot-block size has to be supplied.  It only sets how many memory
+    # slots precede a <SEP> in the prompt; the budget B is independent.
+    n_mem_tokens = cfg.generator.n_mem_tokens or getattr(cocom, "n_mem_tokens", None)
+    if n_mem_tokens is None:
+        raise ValueError(
+            f"{cfg.generator.name_or_path} does not expose n_mem_tokens; pass "
+            "--generator_n_mem (it is doc_max_length // compr_rate for that checkpoint)")
+
     query_tokenizer = cocom.decoder_tokenizer
     if cfg.query_encoder.kind == "hf":
         from .hf_encoder import build_encoder_tokenizer
         query_tokenizer = build_encoder_tokenizer(cfg.query_encoder)
     return GeneratorStack(lm=lm, tokenizer=cocom.decoder_tokenizer,
                           query_tokenizer=query_tokenizer,
-                          n_mem_tokens=int(cocom.n_mem_tokens), cocom=cocom)
+                          n_mem_tokens=int(n_mem_tokens), cocom=cocom)
 
 
 def build_toy_stack(cfg) -> GeneratorStack:
