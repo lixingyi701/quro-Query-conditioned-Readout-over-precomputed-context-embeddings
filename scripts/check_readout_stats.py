@@ -43,7 +43,7 @@ from src.model import build_model
 
 
 def stats_for(model, loader_items, collator, device, budget):
-    norms, cosines, supports, e_all, z_all = [], [], [], [], []
+    norms, cosines, supports, e_all, z_all, diversity = [], [], [], [], [], []
     with torch.no_grad():
         for start in range(0, len(loader_items), 8):
             batch = move_to_device(collator(loader_items[start : start + 8]), device)
@@ -66,10 +66,17 @@ def stats_for(model, loader_items, collator, device, budget):
             if attention is not None:
                 p = attention.mean(1).float().clamp_min(1e-9)
                 supports.append((-(p.log() * p).sum(-1)).exp().flatten())
+            # Redundancy check: a prior shared by every slot can make all B
+            # outputs the same vector, which wastes B-1 of the budget.
+            unit = torch.nn.functional.normalize(e, dim=-1)
+            pair = unit @ unit.transpose(1, 2)                   # (B, budget, budget)
+            off = ~torch.eye(e.size(1), dtype=torch.bool, device=e.device)
+            diversity.append(pair[:, off].mean(-1))
             e_all.append(e.reshape(-1, h).cpu())
             z_all.append(memory[mask].cpu())
 
     e_cat, z_cat = torch.cat(e_all), torch.cat(z_all)
+
     out = {
         "norm_ratio": round(torch.cat(norms).mean().item(), 4),
         "max_cos_to_cache": round(torch.cat(cosines).mean().item(), 4),
@@ -80,6 +87,8 @@ def stats_for(model, loader_items, collator, device, budget):
     }
     if supports:
         out["effective_support"] = round(torch.cat(supports).mean().item(), 2)
+    if diversity:
+        out["inter_slot_cosine"] = round(torch.cat(diversity).mean().item(), 4)
     return out
 
 
@@ -136,6 +145,11 @@ def main():
     if "effective_support" in report:
         print(f"  effective support = {report['effective_support']:.1f} latents per output"
               " (1 = selection)")
+    if "inter_slot_cosine" in report:
+        value = report["inter_slot_cosine"]
+        print(f"  mean cosine between output slots = {value:.3f}"
+              + ("  -> the slots are near-duplicates; B-1 of the budget is wasted"
+                 if value > 0.9 else "  -> the slots carry different evidence"))
 
 
 if __name__ == "__main__":

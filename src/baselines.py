@@ -91,12 +91,52 @@ class SimilarityTopBReadout(nn.Module):
         return selected, {"attention": None, "latent_mask": latent_mask, "token_mask": token_mask}
 
 
-@torch.no_grad()
-def pool_query_in_generator_space(lm, input_ids: torch.Tensor,
-                                  attention_mask: torch.Tensor) -> torch.Tensor:
-    """Mean-pooled last hidden state of the frozen generator over the query."""
+def encode_query_in_generator_space(lm, input_ids: torch.Tensor,
+                                    attention_mask: torch.Tensor,
+                                    pooling: str = "last"):
+    """Run the frozen generator over the query; return per-token states and a vector.
+
+    Both outputs live in the same space as the cached latents, which is the whole
+    point: PISCO/COCOM latents *are* generator hidden states, so a query encoded
+    here can be compared with them directly instead of through a projection
+    learned from scratch.  Measured cost of that alignment: cosine scoring finds
+    the gold document 67.6% of the time against 39.3% for a readout whose queries
+    came from a separate encoder.
+
+    ``pooling`` selects the sentence vector:
+
+    ``last``      final non-padding token.  Mistral is causal, so that position has
+                  attended to the whole query; this is the standard decoder-only
+                  sentence representation (E5-Mistral, RepLLaMA).
+    ``mean``      mean over non-padding tokens.  Cheaper to reason about but blurs
+                  a multi-part question, and for a causal model the early tokens
+                  have seen almost nothing.
+    ``weighted``  position-weighted mean, rising linearly towards the end: a
+                  compromise that keeps some of every token.
+    """
     output = lm(input_ids=input_ids, attention_mask=attention_mask.long(),
                 output_hidden_states=True)
     hidden = output.hidden_states[-1].float()
-    weight = attention_mask[:, :, None].to(hidden.dtype)
-    return (hidden * weight).sum(1) / weight.sum(1).clamp_min(1.0)
+    mask = attention_mask.to(hidden.dtype)
+
+    if pooling == "last":
+        index = mask.sum(1).long().clamp_min(1) - 1
+        pooled = hidden[torch.arange(hidden.size(0), device=hidden.device), index]
+    elif pooling == "mean":
+        weight = mask[:, :, None]
+        pooled = (hidden * weight).sum(1) / weight.sum(1).clamp_min(1.0)
+    elif pooling == "weighted":
+        ramp = torch.arange(1, hidden.size(1) + 1, device=hidden.device, dtype=hidden.dtype)
+        weight = (mask * ramp)[:, :, None]
+        pooled = (hidden * weight).sum(1) / weight.sum(1).clamp_min(1.0)
+    else:
+        raise ValueError(f"unknown query pooling: {pooling}")
+    return hidden, pooled
+
+
+@torch.no_grad()
+def pool_query_in_generator_space(lm, input_ids: torch.Tensor,
+                                  attention_mask: torch.Tensor,
+                                  pooling: str = "last") -> torch.Tensor:
+    """Sentence vector for the query in the cached latents' space."""
+    return encode_query_in_generator_space(lm, input_ids, attention_mask, pooling)[1]

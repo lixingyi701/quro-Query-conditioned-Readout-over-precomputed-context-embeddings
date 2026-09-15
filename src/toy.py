@@ -143,6 +143,7 @@ class ToyTokenizer:
 class ToyOutput:
     loss: Optional[torch.Tensor]
     logits: torch.Tensor
+    hidden_states: Optional[tuple] = None
 
 
 @dataclass
@@ -198,11 +199,19 @@ class ToyCausalLM(nn.Module):
 
     def forward(
         self,
-        inputs_embeds: torch.Tensor,                    # (B, T, d)
+        inputs_embeds: Optional[torch.Tensor] = None,   # (B, T, d)
         attention_mask: Optional[torch.Tensor] = None,  # (B, T) 1=有效
         labels: Optional[torch.Tensor] = None,          # (B, T)，-100 忽略
+        input_ids: Optional[torch.Tensor] = None,       # (B, T)，编码 query 时用
+        output_hidden_states: bool = False,
         **kwargs,
     ) -> ToyOutput:
+        # QuRO 把同一个 LM 同时当生成器和 query 编码器（余弦先验要求 Q 与
+        # latent 同空间），后者按 token id 输入，所以两条入口都要支持。
+        if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("need inputs_embeds or input_ids")
+            inputs_embeds = self.embed(input_ids)
         b, t, _ = inputs_embeds.shape
         assert t <= self.config.max_position_embeddings, (
             f"序列长度 {t} 超过 toy LM 的 max_pos={self.config.max_position_embeddings}；"
@@ -215,7 +224,8 @@ class ToyCausalLM(nn.Module):
         kpm = (attention_mask == 0) if attention_mask is not None else None
         for blk in self.blocks:
             x = blk(x, causal, kpm)
-        logits = self.lm_head(self.ln_f(x))
+        final = self.ln_f(x)
+        logits = self.lm_head(final)
 
         loss = None
         if labels is not None:
@@ -225,7 +235,8 @@ class ToyCausalLM(nn.Module):
                 labels[:, 1:].reshape(-1),
                 ignore_index=-100,
             )
-        return ToyOutput(loss=loss, logits=logits)
+        return ToyOutput(loss=loss, logits=logits,
+                         hidden_states=(final,) if output_hidden_states else None)
 
     @torch.no_grad()
     def generate(self, inputs_embeds: torch.Tensor, attention_mask: Optional[torch.Tensor] = None,

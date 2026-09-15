@@ -59,6 +59,22 @@ class ReadoutConfig:
     add_document_source: bool = True            # retrieval-rank embedding
     add_slot_index: bool = True                 # position within one document
     residual_readout: bool = True               # E = s*AttnPool(Z) + zero-init Delta
+    # Start the *scoring* at a working rule, the way residual_readout starts the
+    # *output* at one.  Query-latent cosine is added to the first block's attention
+    # logits, so step 0 attends where non-parametric top-B would.  Without it a
+    # random to_q/to_k pair yields tiny, semantically meaningless logits and the
+    # softmax averages instead of selecting (measured: 99.85% of uniform entropy).
+    cosine_prior: bool = True
+    # "rank"   : slot b centres on the b-th ranked candidate -> distinct slots
+    # "shared" : every slot centres on the best candidate    -> identical slots
+    # Kept switchable because "do the B slots need to differ?" is an empirical
+    # question, not an assumption: xRAG answers from a single soft token, so slot
+    # redundancy may cost less than it looks.
+    prior_mode: str = "rank"
+    # The prior is row-standardised, so tau reads in standard deviations: 5 puts
+    # the best candidate about five sigma above the field, which is peaked enough
+    # to behave like top-B selection at step 0.
+    tau_init: float = 5.0
     max_document_sources: int = 32
     max_latents_per_document: int = 64
 
@@ -68,6 +84,8 @@ class ReadoutConfig:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
         if self.kind not in {"quro", "pisco_direct", "similarity_topb"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
+        if self.prior_mode not in {"rank", "shared"}:
+            raise ValueError(f"unknown prior_mode: {self.prior_mode}")
         buckets = sorted({int(x) for x in self.budget_buckets})
         if not buckets or buckets[0] < 1:
             raise ValueError("budget_buckets must be positive integers")
@@ -90,9 +108,15 @@ class QueryEncoderConfig:
     of a multi-hop question.
     """
 
-    kind: str = "hf"                            # "hf" | "toy"
+    kind: str = "generator"                     # "generator" | "hf" | "toy"
     name_or_path: str = ""                      # blank -> paths.ENCODER_PATH
     d_model: int = 128                          # toy only
+    # Sentence vector for the cosine prior.  "mean" is the measured winner, not
+    # the a-priori choice: the decoder-only convention is last-token pooling
+    # (E5-Mistral, RepLLaMA), but here last scores 60.1% gold targeting against
+    # 67.6% for mean.  The convention does not transfer, so the default follows
+    # the measurement.
+    pooling: str = "mean"                       # "mean" | "last" | "weighted"
     dtype: str = "bfloat16"
     trust_remote_code: bool = False
     freeze: bool = True
@@ -108,8 +132,10 @@ class QueryEncoderConfig:
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"])
 
     def __post_init__(self):
-        if self.kind not in {"hf", "toy"}:
+        if self.kind not in {"generator", "hf", "toy"}:
             raise ValueError(f"unknown query encoder kind: {self.kind}")
+        if self.pooling not in {"last", "mean", "weighted"}:
+            raise ValueError(f"unknown query pooling: {self.pooling}")
         if self.kind == "hf" and not self.name_or_path:
             self.name_or_path = paths.ENCODER_PATH
 
@@ -269,9 +295,12 @@ def _pisco_base(tag: str) -> Config:
         kind="quro", d_readout=1024, cache_hidden=4096, output_query_mode="xattn",
         max_budget=8, budget_buckets=[4, 8], num_blocks=1, num_heads=8,
         residual_readout=True)
+    # The query is encoded by the generator itself: PISCO latents are generator
+    # hidden states, so this is the only way Q and K share a space without a
+    # bridge learned from scratch.  A separate encoder measured 39.3% gold
+    # targeting against 67.6% for cosine in the shared space.
     cfg.query_encoder = QueryEncoderConfig(
-        kind="hf", name_or_path=paths.ENCODER_PATH, dtype="bfloat16",
-        freeze=True, max_doc_len=64)
+        kind="generator", pooling="mean", freeze=True, max_doc_len=64)
     cfg.generator = GeneratorConfig(kind="pisco", name_or_path=paths.PISCO_MISTRAL,
                                     dtype="bfloat16", lora_init="pisco")
     cfg.decoder = DecoderInputConfig(input_mode="D0", query_text_dropout=0.0)

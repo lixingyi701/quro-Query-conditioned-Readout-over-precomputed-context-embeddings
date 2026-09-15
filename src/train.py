@@ -91,6 +91,9 @@ def build_args():
     ap.add_argument("--readout_blocks", type=int, default=None)
     ap.add_argument("--d_readout", type=int, default=None)
     ap.add_argument("--no_residual_readout", action="store_true")
+    ap.add_argument("--no_cosine_prior", action="store_true")
+    ap.add_argument("--prior_mode", choices=["rank", "shared"], default=None)
+    ap.add_argument("--tau_init", type=float, default=None)
     ap.add_argument("--without_document_source", action="store_true")
     ap.add_argument("--adaptive_budget", action="store_true")
 
@@ -148,6 +151,12 @@ def apply_overrides(cfg, args):
         cfg.readout.num_blocks = args.readout_blocks
     if args.no_residual_readout:
         cfg.readout.residual_readout = False
+    if args.no_cosine_prior:
+        cfg.readout.cosine_prior = False
+    if args.prior_mode:
+        cfg.readout.prior_mode = args.prior_mode
+    if args.tau_init is not None:
+        cfg.readout.tau_init = args.tau_init
     if args.without_document_source:
         cfg.readout.add_document_source = False
     if args.adaptive_budget:

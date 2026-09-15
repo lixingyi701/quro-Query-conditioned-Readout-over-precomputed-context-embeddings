@@ -23,7 +23,8 @@ from typing import List, Optional, Sequence, Union
 import torch
 import torch.nn as nn
 
-from .baselines import PiscoDirectReadout, SimilarityTopBReadout, pool_query_in_generator_space
+from .baselines import (PiscoDirectReadout, SimilarityTopBReadout,
+                        encode_query_in_generator_space, pool_query_in_generator_space)
 from .prompt import DECODER_INPUT_MODES, SLOTLESS_MODES, PiscoPromptBuilder, assemble_inputs
 from .readout import QuroReadout
 
@@ -48,6 +49,47 @@ class TokenEmbeddingQueryEncoder(nn.Module):
         x = self.tok_emb(ids)
         pos = torch.arange(x.size(1), device=ids.device)
         return self.norm(x + self.pos_emb(pos)[None])
+
+
+class GeneratorQueryEncoder(nn.Module):
+    """Encode the query with the frozen generator, so Q and the latents share a space.
+
+    PISCO/COCOM latents *are* generator hidden states.  Running the query through
+    a separate encoder leaves the readout to learn the bridge between two
+    unrelated coordinate systems from scratch, supervised only by a distant answer
+    CE -- measured cost: the learned attention lands on the gold document 39.3% of
+    the time where cosine scoring in a shared space reaches 67.6%.
+
+    The forward pass is short (a query is ~15 tokens against the decoder's ~70) and
+    the non-parametric baseline already pays it, so the comparison stays fair; it
+    does belong in the efficiency accounting.
+    """
+
+    def __init__(self, lm, pooling: str = "last"):
+        super().__init__()
+        self._lm = [lm]                      # hidden from state_dict; frozen
+        self.pooling = pooling
+        self.out_dim = int(lm.config.hidden_size)
+        self.last_pooled = None              # set by forward(), read by the readout
+
+    def forward(self, ids, mask=None):
+        if mask is None:
+            mask = torch.ones_like(ids, dtype=torch.bool)
+        lm = self._lm[0]
+        # The generator and this encoder are the same object, so during training
+        # the LM carries PISCO's lora_dropout=0.1.  Encoding the query under
+        # dropout would make the cosine prior stochastic and the run
+        # irreproducible, so force eval mode here and restore it afterwards.
+        was_training = lm.training
+        lm.eval()
+        try:
+            with torch.no_grad():
+                hidden, pooled = encode_query_in_generator_space(
+                    lm, ids, mask, self.pooling)
+        finally:
+            lm.train(was_training)
+        self.last_pooled = pooled
+        return hidden
 
 
 class QueryBudgetSelector(nn.Module):
@@ -104,7 +146,9 @@ class QuROModel(nn.Module):
                 dropout=r.dropout, max_document_sources=r.max_document_sources,
                 max_latents_per_document=r.max_latents_per_document,
                 add_document_source=r.add_document_source, add_slot_index=r.add_slot_index,
-                residual_readout=r.residual_readout)
+                residual_readout=r.residual_readout,
+                cosine_prior=r.cosine_prior and cache_hidden == self.d_gen,
+                prior_mode=r.prior_mode, tau_init=r.tau_init)
         elif r.kind == "pisco_direct":
             self.readout = PiscoDirectReadout(self.cache_hidden, self.d_gen)
         elif r.kind == "similarity_topb":
@@ -141,6 +185,10 @@ class QuROModel(nn.Module):
     @property
     def lm(self):
         return self._lm[0]
+
+    @property
+    def uses_cosine_prior(self) -> bool:
+        return bool(getattr(self.readout, "cosine_prior", False))
 
     @property
     def gen_dtype(self):
@@ -201,15 +249,26 @@ class QuROModel(nn.Module):
         latents, document_mask = batch["cached_latents"], batch["document_mask"]
         device = latents.device
         needs_query = getattr(self.readout, "needs_query", True) or self.cfg.readout.adaptive_budget
+        # Clear first: a stale pooled vector from the previous batch would be
+        # silently reused when the encoder is skipped.
+        if hasattr(self.query_encoder, "last_pooled"):
+            self.query_encoder.last_pooled = None
         query_emb = (self.encode_query(batch["query_ids"], batch["query_mask"])
                      if needs_query else None)
         budgets, budget_logits = self._resolve_budgets(
             query_emb, batch.get("query_mask"), budget, latents.size(0), device)
 
+        # One generator-space query vector serves two arms: the non-parametric
+        # baseline scores with it directly, and the trained readout uses it as the
+        # cosine prior its attention starts from.
         kwargs = {}
-        if isinstance(self.readout, SimilarityTopBReadout):
-            kwargs["query_vector"] = pool_query_in_generator_space(
-                self.lm, batch["query_gen_ids"], batch["query_gen_mask"])
+        if isinstance(self.readout, SimilarityTopBReadout) or self.uses_cosine_prior:
+            vector = getattr(self.query_encoder, "last_pooled", None)
+            if vector is None:
+                vector = pool_query_in_generator_space(
+                    self.lm, batch["query_gen_ids"], batch["query_gen_mask"],
+                    self.cfg.query_encoder.pooling)
+            kwargs["query_vector"] = vector
         soft_tokens, aux = self.readout(
             latents, document_mask, query_emb, batch.get("query_mask"),
             budget=int(budgets.max().item()), return_attn=return_attn, **kwargs)
@@ -356,6 +415,8 @@ def build_model(cfg, cache_hidden: Optional[int] = None):
 
 
 def build_query_encoder(cfg, stack):
+    if cfg.query_encoder.kind == "generator":
+        return GeneratorQueryEncoder(stack.lm, cfg.query_encoder.pooling)
     """Frozen token-level query encoder; its hidden states are the readout's Q side."""
     if cfg.query_encoder.kind == "hf":
         from .hf_encoder import HFTokenEncoder

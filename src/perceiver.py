@@ -97,20 +97,45 @@ class MultiHeadAttention(nn.Module):
         x_kv: torch.Tensor,                      # (B, Lkv, kv_dim)
         mask: Optional[torch.Tensor] = None,     # (B, Lkv) bool, True=有效
         return_attn: bool = False,
+        score_bias: Optional[torch.Tensor] = None,   # (B, Lkv) or (B, Lq, Lkv)
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """``score_bias`` is added to the logits before the softmax.
+
+        It exists so a readout can be *initialised* at a known-good scoring rule
+        rather than at random.  A random ``to_q``/``to_k`` pair produces logits
+        that are both tiny and semantically meaningless, and softmax over
+        near-equal logits averages rather than selects -- measured at 99.85% of
+        uniform entropy.  Feeding query-latent cosine similarity in here starts
+        the attention at the non-parametric baseline's rule, leaving the learned
+        term to act as a correction on top.
+
+        An additive bias is used rather than an identity initialisation of
+        ``to_q``/``to_k`` because the heads slice the feature dimension: with
+        identity weights each head would score on its own 1/H of the dimensions,
+        so the head-averaged map would not be the cosine at all.
+        """
         q = self._split(self.to_q(self.q_norm(x_q)))
         kv = self.kv_norm(x_kv)
         k = self._split(self.to_k(kv))
         v = self._split(self.to_v(kv))
 
+        bias = None
+        if score_bias is not None:
+            bias = score_bias[:, None, None, :] if score_bias.dim() == 2 else score_bias[:, None]
+            bias = bias.to(q.dtype)
+
         attn_weights = None
-        if return_attn:
-            # 手写注意力，方便导出注意力图做可解释性可视化（论文的卖点之一）
+        if return_attn or bias is not None:
+            # 手写注意力：导出注意力图做可解释性可视化，以及施加打分偏置
             scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale       # (B, H, Lq, Lkv)
+            if bias is not None:
+                scores = scores + bias
             if mask is not None:
                 scores = scores.masked_fill(~mask[:, None, None, :], torch.finfo(scores.dtype).min)
             attn_weights = scores.softmax(dim=-1)
             out = torch.matmul(F.dropout(attn_weights, self.dropout_p, self.training), v)
+            if not return_attn:
+                attn_weights = None
         else:
             attn_mask = mask[:, None, None, :] if mask is not None else None   # 自动广播到 (B,H,Lq,Lkv)
             out = F.scaled_dot_product_attention(
@@ -148,9 +173,10 @@ class AttentionBlock(nn.Module):
         x_kv: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         return_attn: bool = False,
+        score_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         kv = x if x_kv is None else x_kv
-        a, w = self.attn(x, kv, mask=mask, return_attn=return_attn)
+        a, w = self.attn(x, kv, mask=mask, return_attn=return_attn, score_bias=score_bias)
         x = x + a
         x = x + self.ff(x)
         return x, w

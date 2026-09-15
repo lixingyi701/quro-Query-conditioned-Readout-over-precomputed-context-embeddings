@@ -30,10 +30,12 @@ they can all read the same evidence.  Each readout block is therefore
 
 from __future__ import annotations
 
+import math
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .perceiver import AttentionBlock, OutputQueryBuilder
 
@@ -51,8 +53,9 @@ class ReadoutBlock(nn.Module):
             q_dim=d_readout, num_heads=num_heads, head_dim=head_dim,
             widening=self_widening, dropout=dropout)
 
-    def forward(self, slots, memory, latent_mask=None, return_attn=False):
-        slots, attn = self.cross(slots, x_kv=memory, mask=latent_mask, return_attn=return_attn)
+    def forward(self, slots, memory, latent_mask=None, return_attn=False, score_bias=None):
+        slots, attn = self.cross(slots, x_kv=memory, mask=latent_mask,
+                                 return_attn=return_attn, score_bias=score_bias)
         slots, _ = self.slot_self(slots)
         return slots, attn
 
@@ -81,6 +84,9 @@ class QuroReadout(nn.Module):
         max_document_sources: int = 32,
         max_latents_per_document: int = 64,
         add_document_source: bool = True,
+        cosine_prior: bool = True,
+        prior_mode: str = "rank",
+        tau_init: float = 20.0,
         add_slot_index: bool = True,
         residual_readout: bool = True,
     ):
@@ -115,6 +121,29 @@ class QuroReadout(nn.Module):
         ])
         self.out_norm = nn.LayerNorm(d_readout)
         self.out_proj = nn.Linear(d_readout, gen_hidden)
+
+        # Query-latent cosine, injected as an additive bias on the first block's
+        # attention logits.  ``tau`` starts large because cosine lives in [-1, 1]
+        # and a softmax over a range that small is still essentially uniform; at
+        # tau ~ 20 the initial attention reproduces the non-parametric top-B rule.
+        # Parameterised in log space so it stays positive under any optimiser.
+        self.cosine_prior = bool(cosine_prior)
+        self.prior_mode = prior_mode
+        self.log_tau = nn.Parameter(torch.tensor(float(math.log(tau_init))))
+        # Per-slot targeting.  The cosine prior alone carries no slot index, so
+        # every output slot attends to the single best-scoring latent -- measured
+        # inter-slot cosine 1.000, i.e. B-1 of the budget wasted.  Slot b is
+        # therefore centred on the *b-th ranked* candidate of its own row rather
+        # than on a fixed score: ``topk`` values are differentiable, so this is a
+        # differentiable form of top-B's rank assignment and lands each slot on a
+        # distinct latent at step 0.
+        #
+        # Fixing the centres in score space instead was tried and fails: the
+        # standardised scores are roughly normal, so a band near the mean covers
+        # many candidates at once and the attention flattens (effective support
+        # 11.7 of 40, gold attention back down to 41%).  Anchoring on actual order
+        # statistics sidesteps the density problem entirely.
+        self.slot_offset = nn.Parameter(torch.zeros(max_budget))
 
         if self.residual_readout:
             # Delta starts at exactly zero: step 0 reproduces attention-pooled
@@ -152,6 +181,49 @@ class QuroReadout(nn.Module):
         latent_mask = document_mask[:, :, None].expand(b, k, m).reshape(b, k * m)
         return x, raw, latent_mask
 
+    def cosine_bias(self, raw: torch.Tensor, query_vector: Optional[torch.Tensor],
+                    latent_mask: Optional[torch.Tensor] = None, budget: int = 0):
+        """Row-standardised ``tau * z(cos(query, z_j))``, or None.
+
+        The raw cosine is standardised across the candidates of each row before
+        ``tau`` is applied.  Measured on this cache, a query vector and the cached
+        latents are close to orthogonal -- cosine mean 0.033, within-row std 0.037
+        -- so an unstandardised ``tau = 20`` yields a logit spread of 0.74 against
+        0.33 for the randomly initialised learned term: the prior barely wins, and
+        the attention stays near-uniform.  After standardisation ``tau`` reads
+        directly in standard deviations, so the initial peakedness is the same
+        whatever the geometry of a particular cache or compressor.
+        """
+        if not self.cosine_prior or query_vector is None:
+            return None
+        query = query_vector.float()
+        if query.size(-1) != raw.size(-1):
+            raise ValueError(
+                f"query_vector is {query.size(-1)}-d but the cache is {raw.size(-1)}-d; "
+                "the cosine prior needs the query encoded in the cached latents' space")
+        cos = F.cosine_similarity(raw, query[:, None, :].expand_as(raw), dim=-1)
+
+        weight = (torch.ones_like(cos) if latent_mask is None
+                  else latent_mask.to(cos.dtype))
+        count = weight.sum(-1, keepdim=True).clamp_min(1.0)
+        mean = (cos * weight).sum(-1, keepdim=True) / count
+        var = (((cos - mean) ** 2) * weight).sum(-1, keepdim=True) / count
+        score = (cos - mean) / var.clamp_min(1e-8).sqrt()            # (B, K*m)
+
+        # Centre slot b on the b-th largest score in this row, plus a learnable
+        # drift.  Invalid latents must not win a rank, hence the mask.
+        if latent_mask is not None:
+            score = score.masked_fill(~latent_mask, float("-inf"))
+        k = min(max(1, budget), score.size(-1))
+        centres = score.topk(k, dim=-1).values                        # (B, k)
+        if k < budget:                                                # fewer latents than slots
+            centres = torch.cat([centres, centres[:, -1:].expand(-1, budget - k)], dim=-1)
+        if self.prior_mode == "shared":
+            centres = centres[:, :1].expand(-1, budget)      # every slot -> the best one
+        centres = centres + self.slot_offset[:budget][None, :]
+        score = score.masked_fill(torch.isinf(score), 0.0)
+        return -self.log_tau.exp() * (score[:, None, :] - centres[:, :, None]).abs()
+
     def forward(
         self,
         doc_latents: torch.Tensor,
@@ -160,6 +232,7 @@ class QuroReadout(nn.Module):
         query_mask: Optional[torch.Tensor] = None,
         budget: Optional[int] = None,
         return_attn: bool = False,
+        query_vector: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, dict]:
         batch_size = doc_latents.size(0)
         num_outputs = int(budget or self.max_budget)
@@ -170,7 +243,9 @@ class QuroReadout(nn.Module):
         # The first block's weights are both the residual pooling coefficients and
         # the attribution map used for the interpretability analysis, so they are
         # always materialised.
-        slots, attention = self.blocks[0](slots, memory, latent_mask, return_attn=True)
+        score_bias = self.cosine_bias(raw, query_vector, latent_mask, num_outputs)
+        slots, attention = self.blocks[0](slots, memory, latent_mask, return_attn=True,
+                                          score_bias=score_bias)
         for block in self.blocks[1:]:
             slots, _ = block(slots, memory, latent_mask)
 
@@ -180,7 +255,9 @@ class QuroReadout(nn.Module):
         # poisoning the whole backward pass with NaNs.
         aux = {"attention": attention if return_attn else None,
                "latent_mask": latent_mask,
-               "delta_ms": delta.pow(2).mean()}
+               "delta_ms": delta.pow(2).mean(),
+               "tau": self.log_tau.detach().exp(),
+               "slot_offset": self.slot_offset.detach()}
         if not self.residual_readout:
             aux["pooled_ms"] = delta.detach().pow(2).mean()
             return delta, aux
