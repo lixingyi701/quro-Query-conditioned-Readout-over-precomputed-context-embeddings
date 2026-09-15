@@ -110,6 +110,9 @@ def build_args():
     ap.add_argument("--eval_only", action="store_true")
     ap.add_argument("--query_control", action="store_true",
                     help="also evaluate with a mismatched query")
+    ap.add_argument("--doc_control", action="store_true",
+                    help="also evaluate with mismatched documents: the gap to the "
+                         "normal run is what the evidence path is actually worth")
     ap.add_argument("--dump_attn", action="store_true")
     return ap.parse_args()
 
@@ -157,17 +160,23 @@ def apply_overrides(cfg, args):
     return cfg.revalidate()
 
 
-def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control):
+def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
+                  doc_control=False):
     train_set = QuRODataset(cfg.data.train_file, tokenizer, cfg.data,
                             query_tokenizer=query_tokenizer)
     train_loader = DataLoader(train_set, batch_size=cfg.train.batch_size, shuffle=True,
                               collate_fn=collator, drop_last=True)
     evals = {}
     for name, path in cfg.data.resolved_eval_files().items():
-        variants = [(name, 0)] + ([(name + "/mismatch-q", 1)] if query_control else [])
-        for variant, shift in variants:
+        variants = [(name, 0, 0)]
+        if query_control:
+            variants.append((name + "/mismatch-q", 1, 0))
+        if doc_control:
+            variants.append((name + "/mismatch-doc", 0, 1))
+        for variant, q_shift, d_shift in variants:
             dataset = QuRODataset(path, tokenizer, cfg.data, query_tokenizer=query_tokenizer,
-                                  query_shift=shift, limit=cfg.train.eval_max_samples)
+                                  query_shift=q_shift, document_shift=d_shift,
+                                  limit=cfg.train.eval_max_samples)
             evals[variant] = DataLoader(dataset, batch_size=cfg.train.eval_batch_size,
                                         shuffle=False, collate_fn=collator)
     return train_set, train_loader, evals
@@ -280,7 +289,8 @@ def main():
         max_docs=cfg.data.max_docs,
         require_budget_labels=cfg.readout.adaptive_budget and not args.eval_only)
     train_set, train_loader, eval_loaders = build_loaders(
-        cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control)
+        cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
+        args.doc_control)
     print(f"[data] train={len(train_set)} device={device}")
 
     if args.eval_only:

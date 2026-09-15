@@ -94,7 +94,7 @@ class QuRODataset(Dataset):
     """Query rows; ``query_shift`` builds the mismatch-query causal control."""
 
     def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,
-                 query_shift=0, limit=None):
+                 query_shift=0, document_shift=0, limit=None):
         rows = read_jsonl(path)
         if limit is not None:
             rows = rows[:limit]
@@ -103,6 +103,7 @@ class QuRODataset(Dataset):
         self.query_tok = query_tokenizer if query_tokenizer is not None else tokenizer
         self.cfg = data_cfg
         self.query_shift = int(query_shift)
+        self.document_shift = int(document_shift)
         self.eos = getattr(tokenizer, "eos_token_id", None)
 
     def __len__(self):
@@ -114,6 +115,12 @@ class QuRODataset(Dataset):
         # row's documents and answer: a query-conditioned readout must degrade.
         query_row = self.rows[(index + self.query_shift) % len(self.rows)]
         query = query_row["query"]
+        # The document control keeps the query and the gold answer but swaps in a
+        # neighbour's evidence.  Without it there is no way to tell an answer read
+        # out of the cached latents from one recalled from the decoder's
+        # parametric memory -- and on TriviaQA a 7B model answers a large share of
+        # the questions closed-book.
+        document_row = self.rows[(index + self.document_shift) % len(self.rows)]
 
         target_ids = encode_text(self.tok, " " + row["target"].strip())[: self.cfg.max_answer_len]
         if self.eos is not None:
@@ -121,7 +128,7 @@ class QuRODataset(Dataset):
         return {
             "id": row["id"],
             "query": query,
-            "retrieved_doc_ids": row["retrieved_doc_ids"],
+            "retrieved_doc_ids": document_row["retrieved_doc_ids"],
             "query_ids": encode_text(self.query_tok, query)[: self.cfg.max_query_len],
             "query_gen_ids": encode_text(self.tok, query)[: self.cfg.max_query_len],
             "target_ids": target_ids,

@@ -105,6 +105,21 @@ def verdict(runs, mode="D0", budget=8, split="dev"):
     print(f"\n  ==> {'GO' if decision else 'NO-GO'}: "
           + ("proceed to the main experiments" if decision
              else "see QURO_EXPERIMENTAL_DESIGN.md §9 before spending more compute"))
+
+    # These thresholds were registered against whole-split accuracy, which on
+    # TriviaQA is ~94% parametric recall: handing the decoder another question's
+    # documents still scores 64.1% against 67.9% with the right ones.  A verdict
+    # computed there is mostly measuring Mistral's memory, so say so.
+    control = [tag for tag in runs if "doccontrol" in tag]
+    if control:
+        print(f"\n  NOTE: this verdict uses whole-split accuracy, where the evidence\n"
+              f"  path is worth only a few points.  Run the same comparison on the\n"
+              f"  evidence-dependent subset before acting on it:\n"
+              f"    python scripts/evidence_subset.py --control {control[0]} "
+              f"--split {split} --budget {budget}")
+    else:
+        print("\n  NOTE: no --doc_control run found.  Without it there is no way to tell\n"
+              "  an answer read from the cached latents from one recalled by the decoder.")
     return decision
 
 
