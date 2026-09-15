@@ -119,6 +119,8 @@ def build_args():
     ap.add_argument("--eval_files", default=None)
     ap.add_argument("--max_docs", type=int, default=None)
     ap.add_argument("--eval_max_samples", type=int, default=None)
+    ap.add_argument("--num_workers", type=int, default=None,
+                    help="DataLoader prefetch workers; 0 reads the cache inline")
     ap.add_argument("--eval_budgets", default=None,
                     help="comma-separated budgets to evaluate, e.g. 4,8")
     ap.add_argument("--eval_input_modes", default=None,
@@ -138,7 +140,7 @@ def apply_overrides(cfg, args):
         ("steps", cfg.train), ("batch_size", cfg.train), ("lr", cfg.train),
         ("grad_accum", cfg.train), ("seed", cfg.train), ("device", cfg.train),
         ("out_dir", cfg.train), ("resume_from", cfg.train),
-        ("eval_max_samples", cfg.train),
+        ("eval_max_samples", cfg.train), ("num_workers", cfg.train),
         ("d_readout", cfg.readout), ("cache_dir", cfg.data),
         ("train_file", cfg.data), ("max_docs", cfg.data),
     ]
@@ -190,8 +192,15 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
                   doc_control=False, corpus=None):
     train_set = QuRODataset(cfg.data.train_file, tokenizer, cfg.data,
                             query_tokenizer=query_tokenizer)
+    # Loading is not free at scale: one batch pulls B*K*m*h*2 bytes out of the
+    # memmap -- 21 MB at m=32 -- and with num_workers=0 that read blocks the
+    # training step.  Measured at m=32 the GPUs idle waiting on it.
     train_loader = DataLoader(train_set, batch_size=cfg.train.batch_size, shuffle=True,
-                              collate_fn=collator, drop_last=True)
+                              collate_fn=collator, drop_last=True,
+                              num_workers=cfg.train.num_workers,
+                              pin_memory=cfg.train.num_workers > 0,
+                              persistent_workers=cfg.train.num_workers > 0,
+                              prefetch_factor=4 if cfg.train.num_workers > 0 else None)
     evals = {}
     for name, path in cfg.data.resolved_eval_files().items():
         variants = [(name, 0, 0)]

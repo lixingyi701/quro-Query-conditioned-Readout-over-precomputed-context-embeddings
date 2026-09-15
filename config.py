@@ -242,6 +242,11 @@ class TrainConfig:
     residual_weight: float = 0.1
     residual_warmup_steps: int = 300
 
+    # DataLoader prefetch workers.  At m=32 one batch pulls 21 MB out of the
+    # memmap and with 0 workers that read blocks the training step: measured
+    # 2.88 s/step at 0 workers against 0.67 s/step at 4, with the GPUs idling in
+    # between.  Default stays 0 so small runs keep a single process.
+    num_workers: int = 0
     eval_max_samples: Optional[int] = 1000
     eval_batch_size: int = 16
     gen_max_new_tokens: int = 32
