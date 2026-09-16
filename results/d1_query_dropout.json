@@ -1,0 +1,119 @@
+{
+  "experiment": "D1 query-text dropout",
+  "dataset": "TriviaQA eval",
+  "n": 2000,
+  "budget_B": 8,
+  "note": "C and A share architecture, parameters and training; only the output queries differ",
+  "arms": {
+    "d1_C_full": {
+      "D0": {
+        "em": 68.2,
+        "substring": 76.1,
+        "f1": 0.741,
+        "floor_mismatch_doc_em": 59.4
+      },
+      "D1": {
+        "em": 26.75,
+        "substring": 29.35,
+        "f1": 0.327,
+        "floor_mismatch_doc_em": 0.35
+      }
+    },
+    "d1_A_full": {
+      "D0": {
+        "em": 65.1,
+        "substring": 75.65,
+        "f1": 0.721,
+        "floor_mismatch_doc_em": 57.6
+      },
+      "D1": {
+        "em": 5.9,
+        "substring": 12.65,
+        "f1": 0.114,
+        "floor_mismatch_doc_em": 0.15
+      }
+    },
+    "d1_C_half": {
+      "D0": {
+        "em": 70.9,
+        "substring": 74.85,
+        "f1": 0.757,
+        "floor_mismatch_doc_em": 64.1
+      },
+      "D1": {
+        "em": 22.6,
+        "substring": 26.25,
+        "f1": 0.288,
+        "floor_mismatch_doc_em": 0.15
+      }
+    },
+    "d1_A_half": {
+      "D0": {
+        "em": 70.3,
+        "substring": 74.6,
+        "f1": 0.753,
+        "floor_mismatch_doc_em": 64.0
+      },
+      "D1": {
+        "em": 6.55,
+        "substring": 13.7,
+        "f1": 0.12,
+        "floor_mismatch_doc_em": 0.05
+      }
+    }
+  },
+  "paired_tests": {
+    "qdrop_1.0": {
+      "D0": {
+        "em": {
+          "wins": 147,
+          "losses": 85,
+          "p": 5.6483643060518864e-05
+        },
+        "substring": {
+          "wins": 110,
+          "losses": 101,
+          "p": 0.5819149929677933
+        }
+      },
+      "D1": {
+        "em": {
+          "wins": 447,
+          "losses": 30,
+          "p": 1.8499272024828153e-96
+        },
+        "substring": {
+          "wins": 431,
+          "losses": 97,
+          "p": 3.108430167991063e-51
+        }
+      }
+    },
+    "qdrop_0.5": {
+      "D0": {
+        "em": {
+          "wins": 111,
+          "losses": 99,
+          "p": 0.44788702100067485
+        },
+        "substring": {
+          "wins": 103,
+          "losses": 98,
+          "p": 0.7779207003752835
+        }
+      },
+      "D1": {
+        "em": {
+          "wins": 359,
+          "losses": 38,
+          "p": 1.20627430421098e-66
+        },
+        "substring": {
+          "wins": 358,
+          "losses": 107,
+          "p": 1.1192375168303505e-32
+        }
+      }
+    }
+  }
+}
