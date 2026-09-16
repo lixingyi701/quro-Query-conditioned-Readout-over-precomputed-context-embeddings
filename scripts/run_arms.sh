@@ -20,8 +20,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Defaults reproduce /data02/quro/runs/d1_C_full/config.json exactly, so the arm
+# is the only thing that changes and C1 doubles as a reproducibility check
+# against the historical 26.75 EM.
 STEPS="${STEPS:-3000}"
 BUDGET="${BUDGET:-8}"
+QDROP="${QDROP:-1.0}"
+EVAL_MODES="${EVAL_MODES:-D0,D1}"
+SEED="${SEED:-42}"
 RUNS="${QURO_RUNS_DIR:-/data02/quro/runs}"
 PREFIX="${PREFIX:-arms}"
 IFS=',' read -r -a GPU_LIST <<< "${GPUS:-0,1,2,3,4,5,6,7}"
@@ -54,10 +60,15 @@ for arm in "${ARMS[@]}"; do
   if [ "$arm" != "${arm%m}" ]; then extra+=(--agnostic_param_matched); fi
 
   echo "[gpu $gpu] $tag  (${extra[*]})"
+  # --doc_control gives the no-evidence floor that every accuracy number has to be
+  # read against.  --query_control is left off here: it now adds two more 2000-row
+  # generation passes per arm, and the mismatch diagnostic is only worth paying
+  # for once the arm matrix says which arms are worth diagnosing.
   CUDA_VISIBLE_DEVICES="$gpu" nohup python -m src.train \
       --preset pisco_gonogo --steps "$STEPS" --budget "$BUDGET" \
-      --budget_buckets 4,8 --eval_budgets 8 --eval_input_modes D0 \
-      --num_workers 4 --query_control --doc_control \
+      --budget_buckets 4,8 --eval_budgets 8 --eval_input_modes "$EVAL_MODES" \
+      --query_text_dropout "$QDROP" --seed "$SEED" \
+      --num_workers 4 --doc_control \
       --eval_max_samples 2000 \
       --eval_files trivia=/data02/quro/data/trivia/queries.jsonl \
       "${extra[@]}" --tag "$tag" --out_dir "$out" \
