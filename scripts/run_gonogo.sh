@@ -9,6 +9,15 @@
 #   bash scripts/run_gonogo.sh 1     # arms A / C / S / P, one per GPU
 #   bash scripts/run_gonogo.sh 2     # A / C trained with query-text dropout
 #
+# SUPERSEDED for the A arms -- use scripts/run_arms.sh.  The "A" launched below
+# does not pass --no_cosine_prior, and cosine_prior defaults to True, so the query
+# still reaches the readout through the cosine bias on the first block's attention
+# logits.  Everything it produced is A1 (cosine-conditioned), not the
+# query-agnostic control; C-minus-A from this script is the value of *learned*
+# conditioning on top of cosine, not the value of query conditioning.  Kept
+# unchanged so the historical runs stay reproducible.
+# See docs/warning_and_target.md W1.
+#
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,8 +38,8 @@ launch () {   # launch <gpu> <tag> <extra args...>
 mkdir -p "$RUNS"
 
 if [ "$STAGE" = "1" ]; then
-  # C is the method; A is the same model with the query removed from the output
-  # queries, so C-minus-A is exactly the value of query conditioning.
+  # C is the method; A removes the query from the output queries *only* -- the
+  # cosine prior stays on, so this A is A1.  See the header.
   launch 0 gonogo_C_D0 --readout quro --output_query_mode xattn    --eval_input_modes D0
   launch 1 gonogo_A_D0 --readout quro --output_query_mode agnostic --eval_input_modes D0
   # S is query-conditioned but untrained: if the learned readout cannot beat

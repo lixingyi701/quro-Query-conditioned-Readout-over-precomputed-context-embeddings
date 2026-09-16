@@ -282,6 +282,11 @@ class OutputQueryBuilder(nn.Module):
 
     mode:
       agnostic : 只有 P 个可学习 slot，完全不用 query   -> 消融基线（"隐式"对照组）
+      agnostic_matched
+               : 与 xattn 同构、同参数量，但 K/V 换成固定长度的可学习占位序列，
+                 与真实 query 无关。用于机制归因：此时 A 与 C 的唯一差别才真的是
+                 "看不看 query"，而不是顺带少了一个 cross-attention block
+                 （见 docs/warning_and_target.md W1 的参数量说明）。
       add      : slot + Linear(mean-pool(query tokens))
       film     : slot * (1 + scale(q)) + shift(q)
       concat   : Linear([slot; mean-pool(query)])，对应 e_q 与 P 的拼接
@@ -289,8 +294,12 @@ class OutputQueryBuilder(nn.Module):
                  （对应 Option B/C 的多粒度 / 层次化设计）
     """
 
+    #: Modes whose output does not depend on the query at all.
+    QUERY_AGNOSTIC_MODES = ("agnostic", "agnostic_matched")
+
     def __init__(self, d_latent: int, num_compressed: int, query_dim: int,
-                 mode: str = "xattn", num_heads: int = 8, dropout: float = 0.0):
+                 mode: str = "xattn", num_heads: int = 8, dropout: float = 0.0,
+                 placeholder_len: int = 16):
         super().__init__()
         self.mode = mode
         self.num_compressed = num_compressed
@@ -302,10 +311,17 @@ class OutputQueryBuilder(nn.Module):
             self.proj = nn.Linear(query_dim, d_latent * 2)
         elif mode == "concat":
             self.proj = nn.Linear(query_dim + d_latent, d_latent)
-        elif mode == "xattn":
+        elif mode in ("xattn", "agnostic_matched"):
             self.block = AttentionBlock(q_dim=d_latent, kv_dim=query_dim, num_heads=num_heads,
                                         widening=1, dropout=dropout)
+        if mode == "agnostic_matched":
+            # Fixed length, so it cannot leak the real query's token count either.
+            self.placeholder = nn.Parameter(torch.randn(placeholder_len, query_dim) * 0.02)
         self.norm = nn.LayerNorm(d_latent)
+
+    @property
+    def is_query_agnostic(self) -> bool:
+        return self.mode in self.QUERY_AGNOSTIC_MODES
 
     @staticmethod
     def _masked_mean(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -325,10 +341,16 @@ class OutputQueryBuilder(nn.Module):
         if not 1 <= p <= self.num_compressed:
             raise ValueError(f"num_outputs must be in [1,{self.num_compressed}], got {p}")
         base_slots = self.slots[:p]
-        if self.mode == "agnostic":
+        if self.is_query_agnostic:
             assert batch_size is not None or query_emb is not None
             b = batch_size if query_emb is None else query_emb.size(0)
-            return self.norm(base_slots.unsqueeze(0).expand(b, -1, -1))
+            slots = base_slots.unsqueeze(0).expand(b, -1, -1)
+            if self.mode == "agnostic":
+                return self.norm(slots)
+            # agnostic_matched: same block, same cost, query-independent K/V.
+            kv = self.placeholder.unsqueeze(0).expand(b, -1, -1)
+            out, _ = self.block(slots, x_kv=kv, mask=None)
+            return self.norm(out)
 
         assert query_emb is not None, f"output_query_mode={self.mode} 需要 query_emb"
         b = query_emb.size(0)

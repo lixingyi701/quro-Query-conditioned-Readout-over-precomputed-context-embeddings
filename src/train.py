@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config as config_module
-from config import get_config, parse_eval_files
+from config import apply_arm, arm_label, get_config, parse_eval_files
 from src import metrics
 from src.cache import LatentCache
 from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
@@ -84,13 +84,25 @@ def build_args():
 
     ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb"], default=None)
     ap.add_argument("--output_query_mode",
-                    choices=["agnostic", "add", "film", "concat", "xattn"], default=None)
+                    choices=["agnostic", "agnostic_matched", "add", "film", "concat", "xattn"],
+                    default=None)
+    # Sets output_query_mode and cosine_prior together, so an arm cannot be
+    # half-specified the way the historical A runs were (warning_and_target W1).
+    ap.add_argument("--arm", choices=["A0", "A1", "C0", "C1", "S", "P"], default=None)
+    ap.add_argument("--agnostic_param_matched", action="store_true",
+                    help="A arms use agnostic_matched, so A and C have equal parameters")
     ap.add_argument("--budget", type=int, default=None, help="B_max and the fixed eval budget")
     ap.add_argument("--budget_buckets", default=None, help="comma-separated discrete B values")
     ap.add_argument("--no_budget_dropout", action="store_true")
     ap.add_argument("--readout_blocks", type=int, default=None)
     ap.add_argument("--d_readout", type=int, default=None)
+    # Legacy: equivalent to --readout_output_mode delta_only (and, historically,
+    # it also swapped out_proj to the default init -- pass --out_proj_init default
+    # to reproduce that exactly).  See docs/warning_and_target.md W2.
     ap.add_argument("--no_residual_readout", action="store_true")
+    ap.add_argument("--readout_output_mode",
+                    choices=["full", "pool_only", "delta_only"], default=None)
+    ap.add_argument("--out_proj_init", choices=["zeros", "default"], default=None)
     ap.add_argument("--no_cosine_prior", action="store_true")
     ap.add_argument("--prior_mode", choices=["rank", "shared"], default=None)
     ap.add_argument("--tau_init", type=float, default=None)
@@ -152,6 +164,11 @@ def apply_overrides(cfg, args):
         cfg.readout.kind = args.readout
     if args.output_query_mode:
         cfg.readout.output_query_mode = args.output_query_mode
+    # Applied after --readout/--output_query_mode but before the individual knobs,
+    # so a deliberate one-off override still works.  Whatever wins is re-derived by
+    # arm_label() into the run record, so a mismatch surfaces in the results file.
+    if args.arm:
+        apply_arm(cfg, args.arm, param_matched=args.agnostic_param_matched)
     if args.budget is not None:
         cfg.readout.max_budget = args.budget
     if args.budget_buckets:
@@ -160,6 +177,12 @@ def apply_overrides(cfg, args):
         cfg.readout.num_blocks = args.readout_blocks
     if args.no_residual_readout:
         cfg.readout.residual_readout = False
+        cfg.readout.output_mode = "delta_only"
+    if args.readout_output_mode:
+        cfg.readout.output_mode = args.readout_output_mode
+        cfg.readout.residual_readout = (args.readout_output_mode == "full")
+    if args.out_proj_init:
+        cfg.readout.out_proj_init = args.out_proj_init
     if args.no_cosine_prior:
         cfg.readout.cosine_prior = False
     if args.prior_mode:
@@ -203,14 +226,22 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
                               prefetch_factor=4 if cfg.train.num_workers > 0 else None)
     evals = {}
     for name, path in cfg.data.resolved_eval_files().items():
-        variants = [(name, 0, 0)]
+        # (variant, readout-query shift, decoder-query shift, document shift).
+        # "mismatch-q" now moves *only* the readout's question: the decoder still
+        # gets the right one, so a drop is attributable to the readout rather than
+        # to the decoder being asked something else.  "mismatch-q-both" is the old
+        # joint shift, kept for comparability with the historical runs
+        # (docs/warning_and_target.md W4).
+        variants = [(name, 0, 0, 0)]
         if query_control:
-            variants.append((name + "/mismatch-q", 1, 0))
+            variants.append((name + "/mismatch-q", 1, 0, 0))
+            variants.append((name + "/mismatch-q-both", 1, 1, 0))
         if doc_control:
-            variants.append((name + "/mismatch-doc", 0, 1))
-        for variant, q_shift, d_shift in variants:
+            variants.append((name + "/mismatch-doc", 0, 0, 1))
+        for variant, rq_shift, dq_shift, d_shift in variants:
             dataset = QuRODataset(path, tokenizer, cfg.data, query_tokenizer=query_tokenizer,
-                                  query_shift=q_shift, document_shift=d_shift,
+                                  readout_query_shift=rq_shift, decoder_query_shift=dq_shift,
+                                  document_shift=d_shift,
                                   limit=cfg.train.eval_max_samples, corpus=corpus)
             evals[variant] = DataLoader(dataset, batch_size=cfg.train.eval_batch_size,
                                         shuffle=False, collate_fn=collator)
@@ -241,10 +272,24 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
             source_tokens += int(counts.sum())
         if dump_attn_path and result["aux"].get("attention") is not None:
             attention.append(result["aux"]["attention"].float().cpu())
-        for item, prediction in zip(batch["raw"], predictions):
+        decoder_queries = batch.get("queries", [])
+        readout_queries = batch.get("readout_queries", [])
+        swapped_answers = batch.get("readout_query_answers", [])
+        for i, (item, prediction) in enumerate(zip(batch["raw"], predictions)):
             golds = item.get("answers") or [item["answer"]]
-            rows.append({"id": item["id"], "query": item["query"], "golds": golds,
-                         "pred": prediction, **metrics.score(prediction, golds)})
+            row = {"id": item["id"], "query": item["query"], "golds": golds,
+                   "pred": prediction, **metrics.score(prediction, golds)}
+            # Under a mismatch control the two routes carry different questions, so
+            # record both rather than only the row's original one.
+            if i < len(decoder_queries) and decoder_queries[i] != item["query"]:
+                row["decoder_query"] = decoder_queries[i]
+            if i < len(readout_queries) and readout_queries[i] != item["query"]:
+                row["readout_query"] = readout_queries[i]
+                # A swapped question that shares this row's answer is not a control.
+                shared = {a.strip().lower() for a in (swapped_answers[i] or []) if a}
+                row["mismatch_shares_answer"] = bool(
+                    shared & {g.strip().lower() for g in golds if g})
+            rows.append(row)
     if attention:
         torch.save(attention, dump_attn_path)
     aggregate = metrics.aggregate(rows)
@@ -277,6 +322,10 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "tag": args.tag,
         "readout": cfg.readout.kind,
         "output_query_mode": cfg.readout.output_query_mode,
+        "cosine_prior": cfg.readout.cosine_prior,
+        "arm": arm_label(cfg),
+        "readout_output_mode": cfg.readout.output_mode,
+        "out_proj_init": cfg.readout.out_proj_init,
         "generator_lora_init": cfg.generator.lora_init,
         "train_decoder_input_mode": cfg.decoder.input_mode,
         "query_text_dropout": cfg.decoder.query_text_dropout,

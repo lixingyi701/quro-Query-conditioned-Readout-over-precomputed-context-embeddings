@@ -39,6 +39,8 @@ class ReadoutConfig:
 
     # ---- output query array: the core ablation axis (design doc 7.1) ----
     # "agnostic" : learned slots only -> query-agnostic second compression (variant A)
+    # "agnostic_matched" : as xattn, but cross-attends a fixed learned placeholder
+    #              instead of the query -> query-agnostic *and* parameter-matched to C
     # "add"      : slot + Linear(pooled query)
     # "film"     : slot * (1 + scale(q)) + shift(q)
     # "concat"   : Linear([slot; pooled query])   -> explicit e_q + P
@@ -58,7 +60,17 @@ class ReadoutConfig:
 
     add_document_source: bool = True            # retrieval-rank embedding
     add_slot_index: bool = True                 # position within one document
-    residual_readout: bool = True               # E = s*AttnPool(Z) + zero-init Delta
+    residual_readout: bool = True               # legacy alias; False == output_mode "delta_only"
+    # Which terms of E = s*AttnPool(Z) + Delta reach the decoder.  Separate from
+    # the initialisation below on purpose: the old residual_readout flag moved
+    # both at once, so a drop under it was unattributable (warning_and_target W2).
+    #   "full"       : s*AttnPool(Z) + Delta
+    #   "pool_only"  : s*AttnPool(Z)          -> pure selection; carries the "readout" claim
+    #   "delta_only" : Delta                  -> free branch; output is synthesised
+    output_mode: str = "full"
+    # "zeros" makes Delta exactly 0 at step 0; "default" is PyTorch's Linear init.
+    # None picks zeros when a pooling branch exists, default otherwise.
+    out_proj_init: Optional[str] = None
     # Start the *scoring* at a working rule, the way residual_readout starts the
     # *output* at one.  Query-latent cosine is added to the first block's attention
     # logits, so step 0 attends where non-parametric top-B would.  Without it a
@@ -79,13 +91,21 @@ class ReadoutConfig:
     max_latents_per_document: int = 64
 
     def __post_init__(self):
-        valid = {"agnostic", "add", "film", "concat", "xattn"}
+        valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
         if self.kind not in {"quro", "pisco_direct", "similarity_topb"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
         if self.prior_mode not in {"rank", "shared"}:
             raise ValueError(f"unknown prior_mode: {self.prior_mode}")
+        if self.output_mode not in {"full", "pool_only", "delta_only"}:
+            raise ValueError(f"unknown output_mode: {self.output_mode}")
+        if self.out_proj_init not in {None, "zeros", "default"}:
+            raise ValueError(f"unknown out_proj_init: {self.out_proj_init}")
+        # Legacy runs and scripts pass residual_readout=False and expect Delta alone.
+        if not self.residual_readout and self.output_mode == "full":
+            self.output_mode = "delta_only"
+        self.residual_readout = (self.output_mode == "full")
         buckets = sorted({int(x) for x in self.budget_buckets})
         if not buckets or buckets[0] < 1:
             raise ValueError("budget_buckets must be positive integers")
@@ -275,9 +295,67 @@ class Config:
         r, g = self.readout, self.generator
         return (f"[cfg] readout={r.kind}/{r.output_query_mode} d_r={r.d_readout} "
                 f"B={r.max_budget} buckets={r.budget_buckets} blocks={r.num_blocks} "
-                f"residual={r.residual_readout} | generator={g.kind}({g.lora_init}) | "
+                f"out={r.output_mode}/{r.out_proj_init or 'auto'} | "
+                f"generator={g.kind}({g.lora_init}) | "
                 f"decoder_input={self.decoder.input_mode} "
                 f"qdrop={self.decoder.query_text_dropout}")
+
+
+# --------------------------------------------------------------------------------------
+# Arm taxonomy
+# --------------------------------------------------------------------------------------
+# Query information reaches the readout by two independent routes, and the
+# historical runs moved only one of them.  Every A arm on disk has
+# ``cosine_prior=True`` (audited 2026-09-16 over /data02/quro/runs/*/config.json),
+# so it is A1 -- "cosine-conditioned" -- and never the query-agnostic control the
+# results were reported against.  Naming the four cells makes that unstatable.
+#
+#   arm  cosine prior   query into output slots   what it isolates
+#   A0   off            off                       genuinely query-agnostic readout
+#   A1   on             off                       cosine conditioning alone
+#   C0   off            on                        learned conditioning alone
+#   C1   on             on                        the full method
+#   S    top-B by cosine, no learnable slots
+#   P    every cached latent, no second compression
+ARMS = {
+    "A0": {"kind": "quro", "output_query_mode": "agnostic", "cosine_prior": False},
+    "A1": {"kind": "quro", "output_query_mode": "agnostic", "cosine_prior": True},
+    "C0": {"kind": "quro", "output_query_mode": "xattn", "cosine_prior": False},
+    "C1": {"kind": "quro", "output_query_mode": "xattn", "cosine_prior": True},
+    "S": {"kind": "similarity_topb"},
+    "P": {"kind": "pisco_direct"},
+}
+
+
+def apply_arm(cfg: Config, arm: str, param_matched: bool = False) -> Config:
+    """Set every field that defines an arm, so none can be left half-specified."""
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; expected one of {sorted(ARMS)}")
+    spec = dict(ARMS[arm])
+    if param_matched and spec.get("output_query_mode") == "agnostic":
+        spec["output_query_mode"] = "agnostic_matched"
+    for key, value in spec.items():
+        setattr(cfg.readout, key, value)
+    cfg.revalidate()
+    return cfg
+
+
+def arm_label(cfg: Config) -> str:
+    """Name the arm an arbitrary config actually implements, not the one it is tagged.
+
+    Used to stamp every run record, so a mislabelled launch shows up in the results
+    file rather than only in the launch script.
+    """
+    r = cfg.readout
+    if r.kind == "similarity_topb":
+        return "S"
+    if r.kind == "pisco_direct":
+        return "P"
+    agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
+    label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
+    if r.output_query_mode == "agnostic_matched":
+        label += "m"
+    return label
 
 
 # --------------------------------------------------------------------------------------

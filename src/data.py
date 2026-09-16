@@ -91,10 +91,28 @@ def adapt_row(row: Dict[str, Any], cfg, idx: int) -> Dict[str, Any]:
 
 
 class QuRODataset(Dataset):
-    """Query rows; ``query_shift`` builds the mismatch-query causal control."""
+    """Query rows, plus the mismatch controls.
+
+    The question reaches the system by two independent routes -- the readout (query
+    encoder, cosine prior, output slots) and the decoder prompt -- and they are
+    shifted separately:
+
+    ``readout_query_shift``
+        Swaps only the question the *readout* sees.  With ``decoder_query_shift=0``
+        the decoder still gets the right question, so any drop is attributable to
+        the readout selecting the wrong evidence.  This is the main diagnostic.
+    ``decoder_query_shift``
+        Swaps only the question in the prompt.  Bounds how much of a mismatch drop
+        is simply the decoder being asked something else.
+    ``query_shift``
+        Legacy: shifts both at once.  Kept so historical runs can be reproduced,
+        but a drop under it is *not* attributable to the readout
+        (docs/warning_and_target.md W4).
+    """
 
     def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,
-                 query_shift=0, document_shift=0, limit=None, corpus=None):
+                 query_shift=0, document_shift=0, limit=None, corpus=None,
+                 readout_query_shift=None, decoder_query_shift=None):
         rows = read_jsonl(path)
         if limit is not None:
             rows = rows[:limit]
@@ -103,6 +121,11 @@ class QuRODataset(Dataset):
         self.query_tok = query_tokenizer if query_tokenizer is not None else tokenizer
         self.cfg = data_cfg
         self.query_shift = int(query_shift)
+        # An explicit per-path shift wins; otherwise both inherit the legacy value.
+        self.readout_query_shift = int(query_shift if readout_query_shift is None
+                                       else readout_query_shift)
+        self.decoder_query_shift = int(query_shift if decoder_query_shift is None
+                                       else decoder_query_shift)
         self.document_shift = int(document_shift)
         # Only the uncompressed RG baseline reads raw text; the compressed path
         # must never see it, or the cacheability claim would be untested.
@@ -116,8 +139,15 @@ class QuRODataset(Dataset):
         row = self.rows[index]
         # The mismatch control swaps in a neighbour's query while keeping this
         # row's documents and answer: a query-conditioned readout must degrade.
-        query_row = self.rows[(index + self.query_shift) % len(self.rows)]
-        query = query_row["query"]
+        # The two routes are shifted independently so a drop can be attributed.
+        n = len(self.rows)
+        readout_row = self.rows[(index + self.readout_query_shift) % n]
+        readout_query = readout_row["query"]
+        decoder_query = self.rows[(index + self.decoder_query_shift) % n]["query"]
+        # A mismatch control is only clean when the swapped-in question does not
+        # happen to have the same answer; carried through so the per-item dump can
+        # report the collision rate rather than leaving it assumed to be zero.
+        readout_answers = readout_row.get("answers") or [readout_row["answer"]]
         # The document control keeps the query and the gold answer but swaps in a
         # neighbour's evidence.  Without it there is no way to tell an answer read
         # out of the cached latents from one recalled from the decoder's
@@ -130,12 +160,17 @@ class QuRODataset(Dataset):
             target_ids.append(self.eos)
         return {
             "id": row["id"],
-            "query": query,
+            # "query" is what the decoder prompt renders; query_ids/query_gen_ids
+            # are what the readout consumes.  They are only the same string when
+            # the two shifts agree.
+            "query": decoder_query,
+            "readout_query": readout_query,
+            "readout_query_answers": readout_answers,
             "retrieved_doc_ids": document_row["retrieved_doc_ids"],
             "document_texts": [self.corpus[d] for d in document_row["retrieved_doc_ids"]
                                if d in self.corpus],
-            "query_ids": encode_text(self.query_tok, query)[: self.cfg.max_query_len],
-            "query_gen_ids": encode_text(self.tok, query)[: self.cfg.max_query_len],
+            "query_ids": encode_text(self.query_tok, readout_query)[: self.cfg.max_query_len],
+            "query_gen_ids": encode_text(self.tok, readout_query)[: self.cfg.max_query_len],
             "target_ids": target_ids,
             "budget": row.get("budget"),
             "raw": row,
@@ -176,7 +211,12 @@ class QuROCollator:
 
         out = {
             "ids": [x["id"] for x in batch],
+            # "queries" feeds the decoder prompt only; the readout's question is
+            # query_ids/query_gen_ids, and readout_queries records it for the
+            # per-item dump so a mismatch run is auditable after the fact.
             "queries": [x["query"] for x in batch],
+            "readout_queries": [x.get("readout_query", x["query"]) for x in batch],
+            "readout_query_answers": [x.get("readout_query_answers", []) for x in batch],
             "retrieved_doc_ids": doc_ids,
             "document_texts": [x["document_texts"][: self.max_docs] for x in batch],
             "query_ids": query_ids, "query_mask": query_mask,

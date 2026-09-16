@@ -147,6 +147,7 @@ class QuROModel(nn.Module):
                 max_latents_per_document=r.max_latents_per_document,
                 add_document_source=r.add_document_source, add_slot_index=r.add_slot_index,
                 residual_readout=r.residual_readout,
+                output_mode=r.output_mode, out_proj_init=r.out_proj_init,
                 cosine_prior=r.cosine_prior and cache_hidden == self.d_gen,
                 prior_mode=r.prior_mode, tau_init=r.tau_init)
         elif r.kind == "pisco_direct":
@@ -245,7 +246,14 @@ class QuROModel(nn.Module):
         return budgets, logits
 
     # -- readout --------------------------------------------------------
-    def readout_cached(self, batch, budget=None, return_attn=False):
+    def readout_cached(self, batch, budget=None, return_attn=False, output_mode=None):
+        """``output_mode`` overrides the readout's output branch for this call only.
+
+        Probing one trained checkpoint under full / pool_only / delta_only measures
+        what the trained model *currently relies on*; retraining under a mode
+        measures what it could compensate for.  They answer different questions and
+        neither substitutes for the other (warning_and_target.md W2).
+        """
         latents, document_mask = batch["cached_latents"], batch["document_mask"]
         device = latents.device
         needs_query = getattr(self.readout, "needs_query", True) or self.cfg.readout.adaptive_budget
@@ -269,6 +277,12 @@ class QuROModel(nn.Module):
                     self.lm, batch["query_gen_ids"], batch["query_gen_mask"],
                     self.cfg.query_encoder.pooling)
             kwargs["query_vector"] = vector
+        if output_mode is not None:
+            if not isinstance(self.readout, QuroReadout):
+                raise ValueError(
+                    f"output_mode is only defined for the quro readout, not "
+                    f"{type(self.readout).__name__}")
+            kwargs["output_mode"] = output_mode
         soft_tokens, aux = self.readout(
             latents, document_mask, query_emb, batch.get("query_mask"),
             budget=int(budgets.max().item()), return_attn=return_attn, **kwargs)
@@ -322,7 +336,10 @@ class QuROModel(nn.Module):
         cross-attention convergence noted in ``QURO_EXPERIMENTAL_DESIGN.md`` §8.1.
         """
         aux = result["aux"]
-        if "delta_ms" not in aux or not getattr(self.readout, "residual_readout", False):
+        # Only "full" has both terms, so only there is the ratio defined.  Keyed on
+        # the aux value rather than the module so a branch override at call time
+        # cannot silently leave a penalty applied to a branch that is switched off.
+        if "delta_ms" not in aux or aux.get("output_mode", "full") != "full":
             return torch.zeros((), device=result["soft_tokens"].device)
         # Already a mean square, so no sqrt is taken anywhere on the grad path.
         return aux["delta_ms"] / aux["pooled_ms"].detach().clamp_min(1e-6)

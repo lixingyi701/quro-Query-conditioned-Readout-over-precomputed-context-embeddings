@@ -2,6 +2,20 @@
 
 新会话从这里开始。先读本文，再按需展开。
 
+> **⚠ 本文第 1、2、4 节已被 [`warning_and_target.md`](warning_and_target.md) 推翻或限定，先读那篇。**
+> 关键一条已经过实证审计（2026-09-16，遍历 `/data02/quro/runs/*/config.json`）：
+> **磁盘上每一个 A 臂都带 `cosine_prior: True`**（`d1_A_full`、`m32chunk_A`、
+> `m32cocom_A`、`v2_A_agnostic`；更早的 `gonogo_A_D0` 时期配置里还没有这个字段）。
+> 余弦先验通过 `cosine_bias()` 给第一层注意力加偏置，是 query 进入 readout 的
+> **第二条独立通路**，`--output_query_mode agnostic` 关不掉它。
+> 所以那些 A 全是 **A1（余弦条件化）**，从来没有跑过真正 query 无关的 A0，
+> 下面第 1 节"比 query 无关版高 20.85 个 EM 点"这句话没有对照组支撑。
+> 新契约测试给出的量级：随机初始化下换 query，A1 输出变化 max|diff|=5.50，
+> 而不带先验的 C0 只有 0.203——被当作对照组的那一臂反而更依赖 query。
+>
+> 新臂定义见 `config.ARMS`，用 `scripts/run_arms.sh` 启动；`scripts/run_gonogo.sh`
+> 保持原样以便复现历史运行，但已在脚本头部标注其 A 臂实为 A1。
+
 ---
 
 ## 1. 三十秒版本
@@ -51,9 +65,17 @@ D1 评测（问题明文删除，soft token 是唯一通道）：
 
 ## 4. 下一步（按诊断力排序）
 
+> 本节排序已作废，按 `warning_and_target.md` §8 的阶段 1→5 执行：先修对照定义、
+> query 表示与成本计量，再做收益验证。下表保留仅为记录当时的判断。
+> 第 1 项的前提是错的：`--no_residual_readout` 去掉的是**池化旁路**、留下 Δ，
+> 且同时改掉了 `out_proj` 的零初始化，做不了它声称的"Δ 消融"。
+> 现已拆成 `--readout_output_mode {full,pool_only,delta_only}` 与
+> `--out_proj_init {zeros,default}` 两个正交开关，且 `readout_cached(output_mode=...)`
+> 支持同一 checkpoint 上的推理期分支干预。
+
 | # | 实验 | 成本 | 决定什么 |
 |---|---|---|---|
-| 1 | **Δ 消融**（`--no_residual_readout`） | 一轮训练 ~40min | D1 那 20.85 分来自 α（注意力）还是 Δ（自由分支）？若来自 Δ，**"readout" 这个命名要重写** |
+| 1 | ~~**Δ 消融**（`--no_residual_readout`）~~ 见上方更正 | 一轮训练 ~40min | ~~D1 那 20.85 分来自 α（注意力）还是 Δ（自由分支）？~~ |
 | 2 | **容量上界**（逐样本优化 soft prompt，不训练任何模块） | ~1h | 8×4096 装不装得下？分离「容量」与「可计算性」 |
 | 3 | **COCOM-128 基线**（同 ~82× 的一段式压缩） | 下载 14.5G + 2GB 缓存 | 「两段式结构」是不是真贡献（§8.2 的可证伪假说） |
 | 4 | **B 扫描** `budget_buckets=[1,2,4,8,16]` | 一轮训练给五个点 | 预言：**C−A 随 B 减小而增大**（§7.5）。不增大则「冗余论」被推翻 |

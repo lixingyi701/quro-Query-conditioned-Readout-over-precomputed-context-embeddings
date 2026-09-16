@@ -108,6 +108,190 @@ def test_readout(m=4, h=64, cache_h=64):
     check("readout parameter count is reported", params > 0, f"{params/1e6:.3f}M at d_r=48")
 
 
+def test_arms(m=4, h=64, cache_h=64):
+    """Query-invariance of the A arms, with the cosine prior actually supplied.
+
+    The pre-existing agnostic test above passes ``query_vector=None``, so it never
+    exercised ``cosine_bias`` -- which is the second, independent route by which
+    the query reaches the readout.  Every A run on disk had ``cosine_prior=True``,
+    so it was A1 and not the query-agnostic control it was reported as
+    (docs/warning_and_target.md W1).  These checks make that unstatable.
+    """
+    torch.manual_seed(0)
+    b, k, budget, q_dim = 3, 2, 8, 32
+    latents = torch.randn(b, k, m, cache_h)
+    doc_mask = torch.ones(b, k, dtype=torch.bool)
+    doc_mask[2, 1] = False
+    query = torch.randn(b, 6, q_dim)
+    query_mask = torch.ones(b, 6, dtype=torch.bool)
+    other = torch.randn(b, 6, q_dim)
+    # The prior lives in the cache's space, not the query encoder's.
+    vector, other_vector = torch.randn(b, cache_h), torch.randn(b, cache_h)
+
+    def build(output_query_mode, cosine_prior):
+        torch.manual_seed(1)
+        return QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                           d_readout=48, max_budget=budget, num_heads=4,
+                           output_query_mode=output_query_mode, cosine_prior=cosine_prior)
+
+    def swap_query(readout, **kw):
+        a, _ = readout(latents, doc_mask, query, query_mask, budget=budget,
+                       query_vector=vector, **kw)
+        c, _ = readout(latents, doc_mask, other, query_mask, budget=budget,
+                       query_vector=other_vector, **kw)
+        return a, c
+
+    for arm, mode, prior, invariant in (
+        ("A0", "agnostic", False, True),
+        ("A0m", "agnostic_matched", False, True),
+        ("A1", "agnostic", True, False),
+        ("C0", "xattn", False, False),
+        ("C1", "xattn", True, False),
+    ):
+        a, c = swap_query(build(mode, prior))
+        same = torch.allclose(a, c, atol=1e-6)
+        check(f"arm {arm} is {'invariant to' if invariant else 'conditioned on'} the query",
+              same == invariant, f"max|diff|={float((a - c).abs().max()):.2e}")
+
+    # A1 was the historical "query-agnostic" control; name the route it actually uses.
+    a1 = build("agnostic", True)
+    fixed, _ = a1(latents, doc_mask, query, query_mask, budget=budget, query_vector=vector)
+    no_prior, _ = a1(latents, doc_mask, other, query_mask, budget=budget, query_vector=None)
+    check("A1's query dependence is entirely the cosine prior",
+          not torch.allclose(fixed, no_prior, atol=1e-6))
+
+    # Parameter matching: plain agnostic drops the query cross-attention block, so
+    # it is not a like-for-like control for C on parameter count.
+    n = {mode: sum(p.numel() for p in build(mode, True).parameters())
+         for mode in ("agnostic", "agnostic_matched", "xattn")}
+    check("plain agnostic is NOT parameter-matched to C", n["agnostic"] < n["xattn"],
+          f"{n['agnostic']} vs {n['xattn']}")
+    check("agnostic_matched is parameter-matched to C within the placeholder",
+          n["agnostic_matched"] > n["agnostic"]
+          and abs(n["agnostic_matched"] - n["xattn"]) <= 16 * q_dim,
+          f"{n['agnostic_matched']} vs {n['xattn']}")
+
+
+def test_output_modes(m=4, h=64, cache_h=64):
+    """full / pool_only / delta_only must compose exactly, and be probe-able."""
+    torch.manual_seed(0)
+    b, k, budget, q_dim = 3, 2, 8, 32
+    latents = torch.randn(b, k, m, cache_h)
+    doc_mask = torch.ones(b, k, dtype=torch.bool)
+    query = torch.randn(b, 6, q_dim)
+    query_mask = torch.ones(b, 6, dtype=torch.bool)
+
+    torch.manual_seed(1)
+    readout = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                          d_readout=48, max_budget=budget, num_heads=4)
+    # Make Delta non-zero, otherwise full and pool_only agree trivially.
+    with torch.no_grad():
+        readout.out_proj.weight.normal_(std=0.02)
+        readout.out_proj.bias.normal_(std=0.02)
+
+    def run(mode):
+        out, aux = readout(latents, doc_mask, query, query_mask, budget=budget,
+                           output_mode=mode)
+        return out, aux
+
+    full, aux_full = run("full")
+    pool, _ = run("pool_only")
+    delta, _ = run("delta_only")
+    check("full == pool_only + delta_only", torch.allclose(full, pool + delta, atol=1e-5),
+          f"max|diff|={float((full - pool - delta).abs().max()):.2e}")
+    check("the branches are not degenerate",
+          delta.abs().max() > 1e-4 and pool.abs().max() > 1e-4)
+    check("aux records the branch actually taken", aux_full["output_mode"] == "full")
+
+    # The legacy flag changed the branch *and* the initialisation together, which is
+    # what made its result unattributable.  They are separate knobs now.
+    torch.manual_seed(1)
+    legacy = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                         d_readout=48, max_budget=budget, num_heads=4,
+                         residual_readout=False)
+    check("legacy residual_readout=False maps to delta_only",
+          legacy.output_mode == "delta_only" and legacy.out_proj_init == "default")
+    torch.manual_seed(1)
+    matched = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                          d_readout=48, max_budget=budget, num_heads=4,
+                          output_mode="delta_only", out_proj_init="zeros")
+    check("delta_only can keep the zero init, so init is separable from the branch",
+          float(matched.out_proj.weight.abs().max()) == 0.0)
+
+    # pool_only must not leave a residual penalty pointing at a dead branch.
+    _, aux_pool = run("pool_only")
+    check("pool_only reports a zero delta_ms", float(aux_pool["delta_ms"]) == 0.0)
+    _, aux_delta = run("delta_only")
+    check("delta_only reports a zero pooled_ms", float(aux_delta["pooled_ms"]) == 0.0)
+
+
+def test_query_path_separation(cache_dir, train_path, m, h):
+    """The readout's question and the decoder's must be shiftable independently.
+
+    The old ``query_shift`` moved both at once, so a drop under the mismatch
+    control could not be attributed to the readout (warning_and_target.md W4).
+    """
+    from src.toy import ToyTokenizer
+
+    cfg = get_config("toy")
+    # Built from the rows' own text: a vocabulary that maps every question to the
+    # same UNK sequence would make the tokenised paths look identical whether or
+    # not they were actually separated.
+    with open(train_path, encoding="utf-8") as f:
+        queries = [json.loads(line)["query"] for line in f]
+    tokenizer = ToyTokenizer.build_from_texts(queries)
+
+    def rows_for(**shifts):
+        data = QuRODataset(train_path, tokenizer, cfg.data, **shifts)
+        return [data[i] for i in range(len(data))]
+
+    base = rows_for()
+    readout_only = rows_for(readout_query_shift=1, decoder_query_shift=0)
+    decoder_only = rows_for(readout_query_shift=0, decoder_query_shift=1)
+    legacy = rows_for(query_shift=1)
+
+    check("readout-only shift leaves the decoder's question intact",
+          all(a["query"] == b["query"] for a, b in zip(base, readout_only)))
+    check("readout-only shift does move the readout's question",
+          any(a["readout_query"] != b["readout_query"]
+              for a, b in zip(base, readout_only)))
+    check("readout-only shift moves the tokenised readout input",
+          any(a["query_ids"] != b["query_ids"] for a, b in zip(base, readout_only)))
+    check("decoder-only shift leaves the readout's input intact",
+          all(a["query_ids"] == b["query_ids"] for a, b in zip(base, decoder_only))
+          and all(a["query_gen_ids"] == b["query_gen_ids"]
+                  for a, b in zip(base, decoder_only)))
+    check("decoder-only shift does move the prompt's question",
+          any(a["query"] != b["query"] for a, b in zip(base, decoder_only)))
+    check("legacy query_shift still moves both routes together",
+          all(a["query"] == a["readout_query"] for a in legacy)
+          and any(a["query"] != b["query"] for a, b in zip(base, legacy)))
+    check("the swapped question's answers are carried for collision checking",
+          all("readout_query_answers" in r and r["readout_query_answers"]
+              for r in readout_only))
+
+
+def test_arm_labels():
+    """A config must report the arm it implements, not the arm it is tagged."""
+    from config import apply_arm, arm_label, get_config
+
+    for arm in ("A0", "A1", "C0", "C1", "S", "P"):
+        cfg = apply_arm(get_config("toy"), arm)
+        check(f"apply_arm({arm}) round-trips through arm_label", arm_label(cfg) == arm,
+              f"got {arm_label(cfg)}")
+
+    # The historical failure mode: launched as A, but the prior left on.
+    cfg = get_config("toy")
+    cfg.readout.output_query_mode = "agnostic"
+    cfg.readout.cosine_prior = True
+    cfg.revalidate()
+    check("an A arm with the cosine prior still on is labelled A1", arm_label(cfg) == "A1")
+
+    cfg = apply_arm(get_config("toy"), "A0", param_matched=True)
+    check("param-matched A0 is labelled distinctly", arm_label(cfg) == "A0m",
+          f"got {arm_label(cfg)}")
+
+
 def test_baselines(m=4, h=64):
     torch.manual_seed(0)
     b, k = 2, 3
@@ -210,6 +394,10 @@ def main():
     with tempfile.TemporaryDirectory() as root:
         cache_dir, train_path, doc_ids, m, h = build_workspace(root)
         test_readout(m, h, h)
+        test_arms(m, h, h)
+        test_output_modes(m, h, h)
+        test_arm_labels()
+        test_query_path_separation(cache_dir, train_path, m, h)
         test_baselines(m, h)
         test_cache(cache_dir, doc_ids, m, h)
 

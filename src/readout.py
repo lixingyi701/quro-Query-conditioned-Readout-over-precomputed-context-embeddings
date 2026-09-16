@@ -18,8 +18,24 @@ branch.  Two things follow.  The output inherits the scale of the cached latents
 (measured std ~1.9, abs-max ~23 for PISCO -- a LayerNorm'd output at scale 1
 would be badly mismatched against what the decoder LoRA was trained on).  And at
 step 0 QuRO degenerates to attention-pooled PISCO rather than noise, so training
-starts from a working system and every point gained is attributable to
-query-conditioned selection.
+starts from a working system.
+
+The two terms are separately switchable via ``output_mode``:
+
+===============  ==========================================
+``full``         ``s * AttnPool(alpha, Z) + Delta``
+``pool_only``    ``s * AttnPool(alpha, Z)``
+``delta_only``   ``Delta``
+===============  ==========================================
+
+``out_proj_init`` is a *separate* knob on purpose.  The legacy
+``residual_readout=False`` flag changed the output branch and the initialisation
+at the same time, so a drop under it could not be attributed to either -- see
+``docs/warning_and_target.md`` W2.  ``forward(output_mode=...)`` also overrides
+the composition at inference time, so one trained checkpoint can be probed under
+all three branches without retraining.  Attributing a gain to "selection" needs
+``pool_only`` to carry it; a ``delta_only`` model that matches ``full`` means the
+output is being synthesised rather than selected.
 
 **Slot self-attention.**  Perceiver IO's decoder is a single cross-attention, but
 its output queries carry structured positional codes that keep them distinct.
@@ -38,6 +54,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .perceiver import AttentionBlock, OutputQueryBuilder
+
+#: Which terms of ``s * AttnPool(alpha, Z) + Delta`` reach the decoder.
+OUTPUT_MODES = ("full", "pool_only", "delta_only")
+#: How ``out_proj`` starts.  ``zeros`` makes Delta exactly 0 at step 0.
+OUT_PROJ_INITS = ("zeros", "default")
 
 
 class ReadoutBlock(nn.Module):
@@ -89,6 +110,8 @@ class QuroReadout(nn.Module):
         tau_init: float = 20.0,
         add_slot_index: bool = True,
         residual_readout: bool = True,
+        output_mode: Optional[str] = None,
+        out_proj_init: Optional[str] = None,
     ):
         super().__init__()
         self.cache_hidden = cache_hidden
@@ -97,10 +120,34 @@ class QuroReadout(nn.Module):
         self.max_budget = max_budget
         self.add_document_source = add_document_source
         self.add_slot_index = add_slot_index
-        # The residual path pools raw cached latents, so it only exists when the
+        # The pooling branch returns raw cached latents, so it only exists when the
         # cache and the generator share a representation space (they do for
         # PISCO/COCOM, whose latents are Mistral hidden states).
-        self.residual_readout = bool(residual_readout and cache_hidden == gen_hidden)
+        self.can_pool = bool(cache_hidden == gen_hidden)
+
+        # Legacy ``residual_readout=False`` meant "return Delta alone", so it maps
+        # to delta_only.  An explicit output_mode always wins.
+        if output_mode is None:
+            output_mode = "full" if residual_readout else "delta_only"
+        if output_mode not in OUTPUT_MODES:
+            raise ValueError(f"output_mode must be one of {OUTPUT_MODES}, got {output_mode!r}")
+        self.requested_output_mode = output_mode
+        if output_mode in ("full", "pool_only") and not self.can_pool:
+            print(f"[readout] cache is {cache_hidden}-d but the generator is {gen_hidden}-d; "
+                  f"the pooling branch needs a shared space, so output_mode "
+                  f"{output_mode!r} is demoted to 'delta_only'")
+            output_mode = "delta_only"
+        self.output_mode = output_mode
+        # ``residual_readout`` is kept as a read-only alias so old checkpoints and
+        # the residual penalty keep working; it is true iff both terms are live.
+        self.residual_readout = (output_mode == "full")
+
+        if out_proj_init is None:
+            # Zeros only make sense when something else already carries the output.
+            out_proj_init = "zeros" if output_mode in ("full", "pool_only") else "default"
+        if out_proj_init not in OUT_PROJ_INITS:
+            raise ValueError(f"out_proj_init must be one of {OUT_PROJ_INITS}, got {out_proj_init!r}")
+        self.out_proj_init = out_proj_init
 
         self.in_norm = nn.LayerNorm(cache_hidden)
         self.in_proj = nn.Linear(cache_hidden, d_readout)
@@ -145,16 +192,20 @@ class QuroReadout(nn.Module):
         # statistics sidesteps the density problem entirely.
         self.slot_offset = nn.Parameter(torch.zeros(max_budget))
 
-        if self.residual_readout:
+        if self.out_proj_init == "zeros":
             # Delta starts at exactly zero: step 0 reproduces attention-pooled
             # cached latents, i.e. a working PISCO-like system.
             nn.init.zeros_(self.out_proj.weight)
             nn.init.zeros_(self.out_proj.bias)
+        # base_scale is created whenever pooling is *possible*, not only when it is
+        # currently switched on, so that one checkpoint can be replayed under every
+        # output_mode without a state_dict mismatch.
+        if self.can_pool:
             self.base_scale = nn.Parameter(torch.ones(()))
 
     @property
     def needs_query(self) -> bool:
-        return self.output_query.mode != "agnostic"
+        return not self.output_query.is_query_agnostic
 
     def prepare_memory(self, doc_latents: torch.Tensor, document_mask: torch.Tensor):
         """``(B,K,m,h) -> (B,K*m,d_readout)`` plus the flattened key-padding mask."""
@@ -233,7 +284,15 @@ class QuroReadout(nn.Module):
         budget: Optional[int] = None,
         return_attn: bool = False,
         query_vector: Optional[torch.Tensor] = None,
+        output_mode: Optional[str] = None,
     ) -> Tuple[torch.Tensor, dict]:
+        mode = self.output_mode if output_mode is None else output_mode
+        if mode not in OUTPUT_MODES:
+            raise ValueError(f"output_mode must be one of {OUTPUT_MODES}, got {mode!r}")
+        if mode in ("full", "pool_only") and not self.can_pool:
+            raise ValueError(
+                f"output_mode={mode!r} needs the pooling branch, but the cache is "
+                f"{self.cache_hidden}-d and the generator is {self.gen_hidden}-d")
         batch_size = doc_latents.size(0)
         num_outputs = int(budget or self.max_budget)
         memory, raw, latent_mask = self.prepare_memory(doc_latents, document_mask)
@@ -249,22 +308,35 @@ class QuroReadout(nn.Module):
         for block in self.blocks[1:]:
             slots, _ = block(slots, memory, latent_mask)
 
-        delta = self.out_proj(self.out_norm(slots))
-        # Mean *square*, not RMS: ``out_proj`` is zero-initialised, so delta is
+        # Mean *square*, not RMS: ``out_proj`` may be zero-initialised, so delta is
         # exactly 0 at step 0 and sqrt() would have an infinite derivative there,
         # poisoning the whole backward pass with NaNs.
         aux = {"attention": attention if return_attn else None,
                "latent_mask": latent_mask,
-               "delta_ms": delta.pow(2).mean(),
                "tau": self.log_tau.detach().exp(),
-               "slot_offset": self.slot_offset.detach()}
-        if not self.residual_readout:
-            aux["pooled_ms"] = delta.detach().pow(2).mean()
-            return delta, aux
+               "slot_offset": self.slot_offset.detach(),
+               "output_mode": mode}
 
-        alpha = attention.mean(dim=1)                       # (B, budget, K*m)
-        pooled = torch.bmm(alpha.to(raw.dtype), raw)        # (B, budget, h_cache)
-        aux["pooled_ms"] = pooled.detach().pow(2).mean()
+        delta = None
+        if mode in ("full", "delta_only"):
+            delta = self.out_proj(self.out_norm(slots))
+        aux["delta_ms"] = (delta.pow(2).mean() if delta is not None
+                           else slots.new_zeros(()))
+
+        pooled = None
+        if mode in ("full", "pool_only"):
+            alpha = attention.mean(dim=1)                   # (B, budget, K*m)
+            pooled = torch.bmm(alpha.to(raw.dtype), raw)    # (B, budget, h_cache)
+        # pooled_ms is the denominator of the residual penalty, so it must describe
+        # the pooling branch or nothing -- the old code reported delta here under
+        # residual_readout=False, which made the ratio identically 1.
+        aux["pooled_ms"] = (pooled.detach().pow(2).mean() if pooled is not None
+                            else slots.new_zeros(()))
+
+        if mode == "delta_only":
+            return delta, aux
+        if mode == "pool_only":
+            return self.base_scale * pooled, aux
         return self.base_scale * pooled + delta, aux
 
     def num_parameters(self, only_trainable: bool = True) -> int:
