@@ -25,6 +25,21 @@ cd "$(dirname "$0")/.."
 # against the historical 26.75 EM.
 STEPS="${STEPS:-3000}"
 BUDGET="${BUDGET:-8}"
+# FIXED_BUDGET=1 trains and evaluates at a single B, with budget dropout off.
+#
+# Required for the B sweep, not merely tidier.  With mixed budgets the slots are
+# generated at the batch maximum and the smaller ones are masked afterwards --
+# but slot self-attention carries no budget mask, so a B=8 row batched with B=32
+# rows does not produce the same output it would alone.  Sweeping B under mixed
+# batches would measure that contamination rather than the budget
+# (warning_and_target.md W5, which asks for fixed or budget-grouped batches
+# before any sweep).
+FIXED_BUDGET="${FIXED_BUDGET:-}"
+if [ -n "$FIXED_BUDGET" ]; then
+  BUCKETS="$BUDGET"; EVAL_BUDGETS="$BUDGET"; BUDGET_FLAGS=(--no_budget_dropout)
+else
+  BUCKETS="${BUCKETS:-4,8}"; EVAL_BUDGETS="${EVAL_BUDGETS:-8}"; BUDGET_FLAGS=()
+fi
 QDROP="${QDROP:-1.0}"
 EVAL_MODES="${EVAL_MODES:-D0,D1}"
 SEED="${SEED:-42}"
@@ -70,7 +85,8 @@ for arm in "${ARMS[@]}"; do
   # for once the arm matrix says which arms are worth diagnosing.
   CUDA_VISIBLE_DEVICES="$gpu" nohup python -m src.train \
       --preset "$PRESET" --steps "$STEPS" --budget "$BUDGET" \
-      --budget_buckets 4,8 --eval_budgets 8 --eval_input_modes "$EVAL_MODES" \
+      --budget_buckets "$BUCKETS" --eval_budgets "$EVAL_BUDGETS" \
+      --eval_input_modes "$EVAL_MODES" "${BUDGET_FLAGS[@]}" \
       --query_text_dropout "$QDROP" --seed "$SEED" \
       --num_workers 4 --doc_control \
       --eval_max_samples 2000 \
