@@ -1,0 +1,211 @@
+{
+  "dataset": "TriviaQA eval (noisy top-k, 4 random distractors)",
+  "n": 2000,
+  "budget_B": 8,
+  "decoder_input_mode": "D0",
+  "arms": {
+    "m8_pisco": {
+      "C": {
+        "substring": 76.0,
+        "em": 70.9,
+        "f1": 0.762,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71
+      },
+      "S": {
+        "substring": 76.1,
+        "em": 71.7,
+        "f1": 0.765,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71
+      },
+      "P": {
+        "substring": 77.2,
+        "em": 70.75,
+        "f1": 0.77,
+        "soft_tokens": 43.8,
+        "prefill_tokens": 111
+      }
+    },
+    "m32_chunked_pisco": {
+      "C": {
+        "substring": 73.7,
+        "em": 68.55,
+        "f1": 0.74,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 67.3,
+        "evidence_gain": 6.4
+      },
+      "S": {
+        "substring": 73.4,
+        "em": 69.15,
+        "f1": 0.742,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 67.95,
+        "evidence_gain": 5.45
+      },
+      "A": {
+        "substring": 73.9,
+        "em": 69.0,
+        "f1": 0.745,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 67.55,
+        "evidence_gain": 6.35
+      },
+      "P": {
+        "substring": 78.9,
+        "em": 71.2,
+        "f1": 0.778,
+        "soft_tokens": 175.4,
+        "prefill_tokens": 259,
+        "mismatch_doc_substring": 69.1,
+        "evidence_gain": 9.8
+      }
+    },
+    "m32_cocom": {
+      "C": {
+        "substring": 73.5,
+        "em": 66.1,
+        "f1": 0.738,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 68.3,
+        "evidence_gain": 5.2
+      },
+      "S": {
+        "substring": 73.85,
+        "em": 66.05,
+        "f1": 0.738,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 69.15,
+        "evidence_gain": 4.7
+      },
+      "A": {
+        "substring": 73.8,
+        "em": 68.95,
+        "f1": 0.748,
+        "soft_tokens": 8.0,
+        "prefill_tokens": 71,
+        "mismatch_doc_substring": 68.4,
+        "evidence_gain": 5.4
+      },
+      "P": {
+        "substring": 77.05,
+        "em": 67.1,
+        "f1": 0.762,
+        "soft_tokens": 175.4,
+        "prefill_tokens": 242,
+        "mismatch_doc_substring": 70.1,
+        "evidence_gain": 6.95
+      }
+    }
+  },
+  "paired_tests": {
+    "m8_pisco": {
+      "C_vs_S": {
+        "substring": {
+          "wins": 99,
+          "losses": 101,
+          "p": 0.9437
+        },
+        "em": {
+          "wins": 104,
+          "losses": 120,
+          "p": 0.3162
+        }
+      },
+      "P_vs_C": {
+        "substring": {
+          "wins": 130,
+          "losses": 106,
+          "p": 0.1342
+        },
+        "em": {
+          "wins": 140,
+          "losses": 143,
+          "p": 0.9054
+        }
+      }
+    },
+    "m32_chunked_pisco": {
+      "C_vs_S": {
+        "substring": {
+          "wins": 117,
+          "losses": 111,
+          "p": 0.7406
+        },
+        "em": {
+          "wins": 124,
+          "losses": 136,
+          "p": 0.4952
+        }
+      },
+      "C_vs_A": {
+        "substring": {
+          "wins": 102,
+          "losses": 106,
+          "p": 0.8353
+        },
+        "em": {
+          "wins": 112,
+          "losses": 121,
+          "p": 0.6003
+        }
+      },
+      "P_vs_C": {
+        "substring": {
+          "wins": 189,
+          "losses": 85,
+          "p": 0.0
+        },
+        "em": {
+          "wins": 197,
+          "losses": 144,
+          "p": 0.0048
+        }
+      }
+    },
+    "m32_cocom": {
+      "C_vs_S": {
+        "substring": {
+          "wins": 108,
+          "losses": 115,
+          "p": 0.6879
+        },
+        "em": {
+          "wins": 161,
+          "losses": 160,
+          "p": 1.0
+        }
+      },
+      "C_vs_A": {
+        "substring": {
+          "wins": 103,
+          "losses": 109,
+          "p": 0.7314
+        },
+        "em": {
+          "wins": 110,
+          "losses": 167,
+          "p": 0.0007
+        }
+      },
+      "P_vs_C": {
+        "substring": {
+          "wins": 166,
+          "losses": 95,
+          "p": 0.0
+        },
+        "em": {
+          "wins": 202,
+          "losses": 182,
+          "p": 0.3323
+        }
+      }
+    }
+  }
+}
