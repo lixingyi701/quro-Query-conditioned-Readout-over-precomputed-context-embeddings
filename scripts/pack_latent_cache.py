@@ -114,6 +114,8 @@ def main():
 
     manifest["storage"] = "memmap"
     manifest["documents"] = documents
+    # Merging adds documents to the dict but the count was written at build time.
+    manifest["num_documents"] = len(documents)
     tmp = manifest_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)

@@ -1,4 +1,4 @@
-# QuRO v0.1
+# QuRO
 
 **Query-conditioned Readout over precomputed context embeddings**
 
@@ -23,13 +23,24 @@ online, once per query
 Online attention cost is `O(B * K * m)` and does not depend on the original
 document lengths. That is the whole basis of the efficiency argument.
 
-[`docs/`](docs/) holds our own design notes, plans and results;
-[`article/`](article/) holds reading notes on other people's papers. Start with
-[`docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md`](docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md)
-for what has actually been measured, and [`results/`](results/) for the raw
-numbers behind it.
+**Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — current state, standing
+constraints, ready-made caches, and the next experiments in priority order.
 
-## What v0.1 adds over v0.0
+[`docs/`](docs/) holds our own design notes, plans and results;
+[`article/`](article/) holds reading notes on other people's papers;
+[`results/`](results/) holds the raw numbers behind every claim.
+
+### Where this stands
+
+The readout does carry query-conditioned information: with the plain-text
+question removed, it beats a query-agnostic readout of identical architecture by
+20.85 EM points (p=1.8e-96). In the standard setting that capability is redundant
+-- a 7B decoder with the question in text does the evidence matching itself -- so
+C, A and a zero-parameter cosine baseline are indistinguishable, on two
+independent stacks. The open problem is positioning, not feasibility. See
+[`docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md`](docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md).
+
+## What v0.1 added over v0.0
 
 v0.0 implemented the architectural contract against a randomly initialised
 prototype encoder, so none of its numbers meant anything. v0.1 connects real
@@ -82,10 +93,13 @@ Mistral copy, so nothing is re-downloaded and loading works offline.
 
 ## Running
 
+See [`docs/HANDOFF.md`](docs/HANDOFF.md) §6 for the commands actually in use.
+`--num_workers 4` is not optional: without it the cache read blocks the training
+step and m=32 runs at 2.88 s/step instead of 0.73.
+
 ```bash
 bash scripts/run_smoke.sh          # ~15 min: contract tests, cache, regression, short train
-bash scripts/run_gonogo.sh 1       # arms A / C / S / P, one per GPU
-bash scripts/run_gonogo.sh 2       # the query-text-dropout arms
+python tests/test_shapes.py        # 31 CPU contract tests, no downloads
 python scripts/summarize.py        # table + go/no-go verdict
 ```
 
@@ -143,12 +157,15 @@ length would inflate 15.1× into 22.5×.
 Main-table comparisons lock `B`. Storage cost is reported separately, never
 netted off.
 
-## Not claimed in v0.1
+## Not claimed
 
-- The `xi_off` sweep over COCOM rate 4/16/128 (checkpoints not yet downloaded).
-- Token-overflow probing, oracle selection/capacity decomposition.
+- Any accuracy win over a query-agnostic readout or a cosine top-B baseline in
+  the standard setting. There is none; see the results document.
+- A baseline at matched compression rate (COCOM-128 at ~82x, one-stage).
+- TTFT / GFLOPs / the amortisation crossover `q*` -- the efficiency argument is
+  the actual selling point and none of it is measured yet.
 - Adaptive budget training (the selector and loss exist; the labels do not).
-- TTFT / GFLOPs / the amortisation crossover `q*`.
 - LLM-judge scoring, and every dataset beyond the SeleCom splits and TriviaQA.
 
-These are the next experiments, not hidden features.
+These are the next experiments, not hidden features. Priorities are in
+[`docs/HANDOFF.md`](docs/HANDOFF.md) §4.
