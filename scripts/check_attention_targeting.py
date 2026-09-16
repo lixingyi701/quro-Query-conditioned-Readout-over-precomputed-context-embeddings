@@ -40,16 +40,30 @@ from src.data import QuROCollator, QuRODataset, move_to_device, read_jsonl
 from src.model import build_model
 
 
+def gold_positions(row):
+    """Document positions holding gold evidence, as an explicit list.
+
+    ``gold_ranks`` is authoritative when present.  The older ``gold_rank`` +
+    ``n_gold`` pair describes a contiguous block, which holds for the TriviaQA
+    builder but not in general: HotpotQA shuffles its ten paragraphs, and only
+    ~21% of its questions end up with their two gold paragraphs adjacent.
+    """
+    ranks = row.get("gold_ranks")
+    if ranks:
+        return [int(r) for r in ranks]
+    rank = row.get("gold_rank")
+    if rank is None:
+        return []
+    return list(range(int(rank), int(rank) + int(row.get("n_gold", 1))))
+
+
 def gold_mask_for(rows, batch_ids, m, k, device):
     """(B, K*m) bool marking the latents that belong to the gold document(s)."""
     mask = torch.zeros(len(batch_ids), k * m, dtype=torch.bool)
     for i, row_id in enumerate(batch_ids):
-        row = rows[row_id]
-        rank, n_gold = row.get("gold_rank"), row.get("n_gold", 1)
-        if rank is None:
-            continue
-        for j in range(rank, min(rank + n_gold, k)):
-            mask[i, j * m : (j + 1) * m] = True
+        for j in gold_positions(rows[row_id]):
+            if 0 <= j < k:
+                mask[i, j * m : (j + 1) * m] = True
     return mask.to(device)
 
 
@@ -83,8 +97,10 @@ def main():
     raw = {str(r.get("id")): r for r in read_jsonl(path)[: args.rows]}
     for r in raw.values():
         r.setdefault("n_gold", max(1, len(r["retrieved_doc_ids"]) - r.get("n_distractors", 0)))
-    if all(r.get("gold_rank") is None for r in raw.values()):
-        raise SystemExit(f"{path} has no gold_rank; rebuild it with --distractors")
+    if all(not gold_positions(r) for r in raw.values()):
+        raise SystemExit(
+            f"{path} marks no gold documents; it needs gold_ranks (HotpotQA) or "
+            "gold_rank (rebuild the TriviaQA rows with --distractors)")
 
     dataset = QuRODataset(path, stack.tokenizer, cfg.data,
                           query_tokenizer=stack.query_tokenizer, limit=args.rows)

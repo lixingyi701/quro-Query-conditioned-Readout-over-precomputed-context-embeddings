@@ -431,10 +431,40 @@ def pisco_gonogo_config() -> Config:
     return cfg
 
 
+def pisco_hotpot_config() -> Config:
+    """Multi-hop: two gold paragraphs per question, so the budget has work to do.
+
+    TriviaQA's questions are single-fact, which is the condition least favourable
+    to a multi-slot readout -- one latent answers the question and the other B-1
+    slots have nothing to allocate.  HotpotQA's distractor setting asks for two
+    paragraphs combined out of ten, so "which evidence, for this question" is a
+    real decision rather than a one-slot one.  If query-conditioned readout does
+    not help here, the B-slot design has no task left to defend it.
+
+    ``dev`` and ``test`` are disjoint halves of the official validation split;
+    read ``dev`` while iterating and leave ``test`` alone (warning_and_target §5.9).
+    """
+    cfg = _pisco_base("hotpot")
+    root = os.path.join(paths.DATA_DIR, "hotpot")
+    cfg.data = DataConfig(
+        train_file=os.path.join(root, "train.jsonl"),
+        eval_files={"dev": os.path.join(root, "dev.jsonl"),
+                    "test": os.path.join(root, "test.jsonl")},
+        cache_dir=os.path.join(paths.CACHE_ROOT, "hotpot-pisco-r16"),
+        # The distractor setting supplies exactly ten paragraphs per question.
+        max_docs=10)
+    cfg.train.steps = 3000
+    cfg.train.batch_size = 8
+    cfg.train.grad_accum = 2
+    cfg.train.eval_max_samples = 2000
+    return cfg
+
+
 PRESETS = {
     "toy": toy_config,
     "pisco_smoke": pisco_smoke_config,
     "pisco_gonogo": pisco_gonogo_config,
+    "pisco_hotpot": pisco_hotpot_config,
 }
 
 
