@@ -71,7 +71,9 @@ def lr_lambda_factory(total, warmup_ratio):
 
 def build_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--preset", default="pisco_smoke", choices=["toy", "pisco_smoke", "pisco_gonogo"])
+    # Derived from config.PRESETS rather than repeated: a hardcoded copy silently
+    # hides every preset added after it was written.
+    ap.add_argument("--preset", default="pisco_smoke", choices=sorted(config_module.PRESETS))
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out_dir", default=None)
     ap.add_argument("--steps", type=int, default=None)

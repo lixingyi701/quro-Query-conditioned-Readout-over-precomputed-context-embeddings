@@ -28,6 +28,10 @@ BUDGET="${BUDGET:-8}"
 QDROP="${QDROP:-1.0}"
 EVAL_MODES="${EVAL_MODES:-D0,D1}"
 SEED="${SEED:-42}"
+PRESET="${PRESET:-pisco_gonogo}"
+# Only the development split by default.  HotpotQA's test half exists to be left
+# alone until a protocol is locked (warning_and_target §5.9).
+EVAL_FILES="${EVAL_FILES:-trivia=/data02/quro/data/trivia/queries.jsonl}"
 RUNS="${QURO_RUNS_DIR:-/data02/quro/runs}"
 PREFIX="${PREFIX:-arms}"
 IFS=',' read -r -a GPU_LIST <<< "${GPUS:-0,1,2,3,4,5,6,7}"
@@ -65,12 +69,12 @@ for arm in "${ARMS[@]}"; do
   # generation passes per arm, and the mismatch diagnostic is only worth paying
   # for once the arm matrix says which arms are worth diagnosing.
   CUDA_VISIBLE_DEVICES="$gpu" nohup python -m src.train \
-      --preset pisco_gonogo --steps "$STEPS" --budget "$BUDGET" \
+      --preset "$PRESET" --steps "$STEPS" --budget "$BUDGET" \
       --budget_buckets 4,8 --eval_budgets 8 --eval_input_modes "$EVAL_MODES" \
       --query_text_dropout "$QDROP" --seed "$SEED" \
       --num_workers 4 --doc_control \
       --eval_max_samples 2000 \
-      --eval_files trivia=/data02/quro/data/trivia/queries.jsonl \
+      --eval_files "$EVAL_FILES" \
       "${extra[@]}" --tag "$tag" --out_dir "$out" \
       > "$RUNS/$tag.log" 2>&1 &
   i=$((i + 1))
@@ -86,7 +90,7 @@ runs, arms = sys.argv[1], sys.argv[2:]
 prefix = os.environ.get("PREFIX", "arms")
 print(f"{'tag':<16}{'requested':<12}{'implemented':<12}")
 for arm in arms:
-    path = os.path.join(runs, f"{prefix}_{arm}", "results.json")
+    path = os.path.join(runs, f"{prefix}_{arm}", "result.json")
     got = "MISSING"
     if os.path.exists(path):
         got = json.load(open(path)).get("arm", "unrecorded")
