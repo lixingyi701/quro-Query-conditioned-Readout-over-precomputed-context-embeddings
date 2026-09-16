@@ -172,6 +172,53 @@ def test_arms(m=4, h=64, cache_h=64):
           f"{n['agnostic_matched']} vs {n['xattn']}")
 
 
+def test_cosine_prior_short_rows(m=4, h=64, cache_h=64):
+    """A row with fewer valid latents than the budget must not poison the batch.
+
+    ``cosine_bias`` ranks candidates with ``topk`` over scores whose invalid
+    entries are -inf.  When a row holds fewer valid latents than there are slots,
+    topk runs off the end of the mask and the surplus centres come back -inf,
+    which makes every ``|score - centre|`` infinite: the slot's whole attention
+    row is -inf, its softmax is NaN, and the backward pass spreads that to every
+    parameter.  HotpotQA hit this at B=32, where 86 training questions carry only
+    two paragraphs; B=8 and B=16 stayed under the limit and hid it.
+    """
+    torch.manual_seed(0)
+    b, k, budget, q_dim = 3, 4, 8, 32
+    latents = torch.randn(b, k, m, cache_h)
+    doc_mask = torch.ones(b, k, dtype=torch.bool)
+    # Row 0 keeps one document: m=4 valid latents against a budget of 8.
+    doc_mask[0, 1:] = False
+    doc_mask[1, 2:] = False
+    query = torch.randn(b, 6, q_dim)
+    query_mask = torch.ones(b, 6, dtype=torch.bool)
+    vector = torch.randn(b, cache_h)
+
+    readout = QuroReadout(cache_hidden=cache_h, gen_hidden=cache_h, query_dim=q_dim,
+                          d_readout=48, max_budget=budget, num_heads=4,
+                          cosine_prior=True)
+    out, aux = readout(latents, doc_mask, query, query_mask, budget=budget,
+                       query_vector=vector, return_attn=True)
+    check("short rows do not produce NaN outputs", torch.isfinite(out).all().item(),
+          f"{int((~torch.isfinite(out)).sum())} non-finite")
+    check("short rows do not produce NaN attention",
+          torch.isfinite(aux["attention"]).all().item())
+    check("masked documents still get zero attention in short rows",
+          float(aux["attention"][0, :, :, m:].abs().max()) < 1e-6)
+
+    out.pow(2).mean().backward()
+    grads = [p.grad for p in readout.parameters() if p.grad is not None]
+    check("gradients stay finite with short rows",
+          all(torch.isfinite(g).all().item() for g in grads),
+          f"{len(grads)} gradients")
+
+    # The budget must also be allowed to exceed the number of valid latents.
+    wide, _ = readout(latents, doc_mask, query, query_mask, budget=budget,
+                      query_vector=vector)
+    check("a budget above the valid-latent count is finite",
+          torch.isfinite(wide).all().item())
+
+
 def test_output_modes(m=4, h=64, cache_h=64):
     """full / pool_only / delta_only must compose exactly, and be probe-able."""
     torch.manual_seed(0)
@@ -395,6 +442,7 @@ def main():
         cache_dir, train_path, doc_ids, m, h = build_workspace(root)
         test_readout(m, h, h)
         test_arms(m, h, h)
+        test_cosine_prior_short_rows(m, h, h)
         test_output_modes(m, h, h)
         test_arm_labels()
         test_query_path_separation(cache_dir, train_path, m, h)

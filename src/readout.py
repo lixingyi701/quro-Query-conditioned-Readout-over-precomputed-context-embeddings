@@ -269,6 +269,24 @@ class QuroReadout(nn.Module):
         centres = score.topk(k, dim=-1).values                        # (B, k)
         if k < budget:                                                # fewer latents than slots
             centres = torch.cat([centres, centres[:, -1:].expand(-1, budget - k)], dim=-1)
+        # The guard above covers a *batch* with fewer latents than slots.  A single
+        # row can also have fewer *valid* ones -- 86 HotpotQA training questions
+        # ship only 2 paragraphs, so 16 latents against a budget of 32 -- and then
+        # topk runs off the end of the mask and returns -inf centres.  Those make
+        # |score - centre| infinite for every candidate, so the slot's entire
+        # attention row is -inf and the softmax is NaN, which the backward pass
+        # spreads to every parameter.  Fall back to the row's worst valid centre,
+        # which is what the ranks would have converged to anyway; centres are
+        # sorted descending, so it is the last finite entry.
+        finite = torch.isfinite(centres)
+        if not bool(finite.all()):
+            counts = finite.sum(-1)
+            last = centres.gather(-1, (counts - 1).clamp_min(0)[:, None])
+            # A fully masked row has no valid centre at all; 0 is the mean of the
+            # standardised scores, so it degenerates to a flat prior rather than NaN.
+            last = torch.where(finite.any(-1, keepdim=True), last,
+                               torch.zeros_like(last))
+            centres = torch.where(finite, centres, last.expand_as(centres))
         if self.prior_mode == "shared":
             centres = centres[:, :1].expand(-1, budget)      # every slot -> the best one
         centres = centres + self.slot_offset[:budget][None, :]
