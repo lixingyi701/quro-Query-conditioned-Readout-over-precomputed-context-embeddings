@@ -52,7 +52,14 @@ def main():
     # Fold in the parallel slices before sizing the output file.  Document IDs are
     # content hashes, so a passage that appears in two slices is simply the same
     # entry twice and the later one wins; shard indices are renumbered.
-    sources = [(root, manifest)]
+    # shard_root is built as we go.  Deriving it afterwards from ``sources`` is
+    # the bug that corrupted the first m=32 caches: the first entry held a
+    # *reference* to ``manifest``, whose shard list had already been extended, so
+    # the slices' renumbered shards were read out of the first slice's directory.
+    # Every slice names its files shard-00000.pt upwards, so the wrong file opened
+    # silently -- right shape, no NaN, every existing check passing, and half the
+    # corpus served another document's latents.
+    shard_root = {i: root for i in range(len(manifest["shards"]))}
     for extra in args.merge:
         extra = os.path.abspath(extra)
         with open(os.path.join(extra, "manifest.json"), encoding="utf-8") as f:
@@ -64,14 +71,9 @@ def main():
         offset = len(manifest["shards"])
         for doc_id, loc in other["documents"].items():
             manifest["documents"][doc_id] = {**loc, "shard": int(loc["shard"]) + offset}
+        for i in range(len(other["shards"])):
+            shard_root[offset + i] = extra
         manifest["shards"].extend(other["shards"])
-        sources.append((extra, other))
-    shard_root = {}
-    base = 0
-    for src_root, src in sources:
-        for i in range(len(src["shards"])):
-            shard_root[base + i] = src_root
-        base += len(src["shards"])
 
     documents = manifest["documents"]
     shards = manifest["shards"]
@@ -125,7 +127,29 @@ def main():
     latents, mask, counts = cache.get_many([[doc_id] for doc_id in sample])
     if not np.isfinite(latents.float().numpy()).all():
         raise RuntimeError("packed cache contains NaN or Inf")
-    print(f"verified {len(sample)} documents through LatentCache: {tuple(latents.shape)}")
+
+    # Shape and finiteness do not catch a wrong *mapping*, which is the failure
+    # mode that actually happened.  Sample from every source directory and check
+    # each packed row against the shard it claims to come from.
+    checked = 0
+    for src in [root] + [os.path.abspath(x) for x in args.merge]:
+        owned = [d for d, loc in documents.items() if shard_root[int(loc["shard"])] == src]
+        if not owned:
+            raise RuntimeError(f"no documents attributed to {src}")
+        probes = owned[:: max(1, len(owned) // 8)][:8]
+        for doc_id in probes:
+            loc = documents[doc_id]
+            payload = _safe_torch_load(
+                os.path.join(src, str(shards[int(loc["shard"])]["file"])), map_location="cpu")
+            expected = payload["latents"][int(loc["row"])].numpy()
+            actual = cache.get(doc_id)[0].numpy()
+            if not np.array_equal(expected, actual):
+                raise RuntimeError(
+                    f"{doc_id} in {src} packed to the wrong row: the merge mapping is broken")
+            checked += 1
+        del payload
+    print(f"verified {len(sample)} reads and {checked} shard-level round trips "
+          f"across {1 + len(args.merge)} source directories")
 
     if args.remove_shards:
         for i, shard in enumerate(shards):
