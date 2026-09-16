@@ -23,9 +23,11 @@ online, once per query
 Online attention cost is `O(B * K * m)` and does not depend on the original
 document lengths. That is the whole basis of the efficiency argument.
 
-See [`article/QURO_EXPERIMENTAL_DESIGN.md`](article/QURO_EXPERIMENTAL_DESIGN.md)
-for the experiment plan and [`article/QURO_V0.1_IMPLEMENTATION_PLAN.md`](article/QURO_V0.1_IMPLEMENTATION_PLAN.md)
-for what this version implements and why.
+[`docs/`](docs/) holds our own design notes, plans and results;
+[`article/`](article/) holds reading notes on other people's papers. Start with
+[`docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md`](docs/QURO_V0.2_RESULTS_AND_ANALYSIS.md)
+for what has actually been measured, and [`results/`](results/) for the raw
+numbers behind it.
 
 ## What v0.1 adds over v0.0
 

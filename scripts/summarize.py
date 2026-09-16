@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import paths
 
-# Fixed in advance; see article/QURO_V0.1_IMPLEMENTATION_PLAN.md §6.
+# Fixed in advance; see docs/QURO_V0.1_IMPLEMENTATION_PLAN.md §6.
 MIN_C_MINUS_A_EM = 0.03          # query conditioning must be worth >= 3 EM points
 MIN_MISMATCH_DROP_EM = 0.05      # C must lose >= 5 EM points on a wrong query
 MAX_C_BELOW_P_EM = 0.03          # C at B=8 may trail PISCO at B=K*m by <= 3 points
