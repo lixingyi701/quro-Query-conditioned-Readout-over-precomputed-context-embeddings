@@ -1,0 +1,1163 @@
+{
+  "commit": "2f50924cee80ab82e7f3502ca09bc6cbe91cf3d2",
+  "generated": "2026-09-16T17:14:48+00:00",
+  "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
+  "paired_tests": [
+    {
+      "a": "hp2d0_C1",
+      "arm_a": "C1",
+      "arm_b": "S",
+      "b": "hp2d0_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 5.2,
+        "losses": 134,
+        "p": 7.69358440427855e-08,
+        "wins": 238
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "qdrop0",
+      "substring": {
+        "delta": 5.2,
+        "losses": 143,
+        "p": 1.5579815884503625e-07,
+        "wins": 247
+      }
+    },
+    {
+      "a": "hp2d0_P",
+      "arm_a": "P",
+      "arm_b": "C1",
+      "b": "hp2d0_C1",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 11.7,
+        "losses": 103,
+        "p": 4.3887446981602275e-30,
+        "wins": 337
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "qdrop0",
+      "substring": {
+        "delta": 13.45,
+        "losses": 91,
+        "p": 6.66561422685845e-39,
+        "wins": 360
+      }
+    },
+    {
+      "a": "hp2d0_P",
+      "arm_a": "P",
+      "arm_b": "S",
+      "b": "hp2d0_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 16.9,
+        "losses": 90,
+        "p": 1.0404355636815568e-53,
+        "wins": 428
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "qdrop0",
+      "substring": {
+        "delta": 18.65,
+        "losses": 81,
+        "p": 6.241894111868015e-64,
+        "wins": 454
+      }
+    },
+    {
+      "a": "hp1_C1",
+      "arm_a": "C1",
+      "arm_b": "S",
+      "b": "hp1_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 12.85,
+        "losses": 93,
+        "p": 4.066516811084052e-36,
+        "wins": 350
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 11.2,
+        "losses": 129,
+        "p": 4.083136948486271e-25,
+        "wins": 353
+      }
+    },
+    {
+      "a": "hp1_C1",
+      "arm_a": "C1",
+      "arm_b": "S",
+      "b": "hp1_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 21.9,
+        "losses": 40,
+        "p": 2.4863830984123548e-96,
+        "wins": 478
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 24.1,
+        "losses": 39,
+        "p": 1.0947628365548593e-108,
+        "wins": 521
+      }
+    },
+    {
+      "a": "hp1_C1",
+      "arm_a": "C1",
+      "arm_b": "C0",
+      "b": "hp1_C0",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.6,
+        "losses": 147,
+        "p": 0.5295298974632964,
+        "wins": 159
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 0.0,
+        "losses": 158,
+        "p": 1.0,
+        "wins": 158
+      }
+    },
+    {
+      "a": "hp1_C0",
+      "arm_a": "C0",
+      "arm_b": "A0",
+      "b": "hp1_A0",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 20.1,
+        "losses": 50,
+        "p": 4.9010301316735974e-82,
+        "wins": 452
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 22.35,
+        "losses": 53,
+        "p": 3.127595465162674e-92,
+        "wins": 500
+      }
+    },
+    {
+      "a": "hp2_A1",
+      "arm_a": "A1",
+      "arm_b": "A0",
+      "b": "hp1_A0",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 2.25,
+        "losses": 80,
+        "p": 0.002043623836727893,
+        "wins": 125
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 2.9,
+        "losses": 86,
+        "p": 0.000158887140328474,
+        "wins": 144
+      }
+    },
+    {
+      "a": "w1_C1",
+      "arm_a": "C1",
+      "arm_b": "C0",
+      "b": "w1_C0",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -1.0,
+        "losses": 157,
+        "p": 0.26778718446143923,
+        "wins": 137
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": -1.7,
+        "losses": 186,
+        "p": 0.07250267963601223,
+        "wins": 152
+      }
+    },
+    {
+      "a": "w1_C0",
+      "arm_a": "C0",
+      "arm_b": "A0",
+      "b": "w1_A0",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 27.35,
+        "losses": 4,
+        "p": 6.680221178829607e-158,
+        "wins": 551
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 28.95,
+        "losses": 14,
+        "p": 3.5058997084843774e-155,
+        "wins": 593
+      }
+    },
+    {
+      "a": "w1_A1",
+      "arm_a": "A1",
+      "arm_b": "A0",
+      "b": "w1_A0",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 5.5,
+        "losses": 7,
+        "p": 7.52085824474887e-27,
+        "wins": 117
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 10.55,
+        "losses": 27,
+        "p": 2.3718308470204564e-43,
+        "wins": 238
+      }
+    },
+    {
+      "a": "w1_C1",
+      "arm_a": "C1",
+      "arm_b": "A1",
+      "b": "w1_A1",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 20.85,
+        "losses": 30,
+        "p": 1.8499272024828153e-96,
+        "wins": 447
+      },
+      "mode": "D1",
+      "n": 2000,
+      "setting": "qdrop1.0",
+      "substring": {
+        "delta": 16.7,
+        "losses": 97,
+        "p": 3.108430167991063e-51,
+        "wins": 431
+      }
+    }
+  ],
+  "runs": {
+    "d1_A_full": {
+      "arm": null,
+      "arm_note": "labelled retrospectively from config.json",
+      "cosine_prior": true,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.651,
+            "f1": 0.7207527084800314,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.7565,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.075,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.576,
+            "f1": 0.6449178762865294,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.679,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.059,
+            "f1": 0.11376749886382699,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.1265,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.0575,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0015,
+            "f1": 0.01870073706822933,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0055,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    },
+    "d1_C_full": {
+      "arm": null,
+      "arm_note": "labelled retrospectively from config.json",
+      "cosine_prior": true,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.682,
+            "f1": 0.741398337246689,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.761,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.088,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.594,
+            "f1": 0.6566996611505715,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.6755,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.2675,
+            "f1": 0.3268278692925428,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.2935,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.264,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0035,
+            "f1": 0.015154882060252896,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.007,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    },
+    "gonogo_A_D0": {
+      "arm": null,
+      "arm_note": "predates the arm taxonomy; cosine_prior was not recorded in config at this commit",
+      "cosine_prior": null,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.005,
+            "em": 0.686,
+            "f1": 0.7395422332569388,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.729,
+            "xi_eff": 87.713125
+          },
+          "mismatch-q": {
+            "constant_baseline_em": 0.005,
+            "em": 0.003,
+            "f1": 0.00844689754689755,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.006,
+            "xi_eff": 87.713125
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "qdrop0",
+      "split": "trivia"
+    },
+    "gonogo_C_D0": {
+      "arm": null,
+      "arm_note": "predates the arm taxonomy; cosine_prior was not recorded in config at this commit",
+      "cosine_prior": null,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.005,
+            "em": 0.679,
+            "f1": 0.7232720685111987,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.716,
+            "xi_eff": 87.713125
+          },
+          "mismatch-q": {
+            "constant_baseline_em": 0.005,
+            "em": 0.001,
+            "f1": 0.007991771094402673,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.003,
+            "xi_eff": 87.713125
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "qdrop0",
+      "split": "trivia"
+    },
+    "gonogo_P_D0": {
+      "arm": null,
+      "arm_note": "predates the arm taxonomy; cosine_prior was not recorded in config at this commit",
+      "cosine_prior": null,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.005,
+            "em": 0.717,
+            "f1": 0.7771023809523805,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.779,
+            "xi_eff": 15.997287069122743
+          },
+          "mismatch-q": {
+            "constant_baseline_em": 0.005,
+            "em": 0.002,
+            "f1": 0.007244516594516595,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.004,
+            "xi_eff": 15.997287069122743
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "qdrop0",
+      "split": "trivia"
+    },
+    "gonogo_S_D0": {
+      "arm": null,
+      "arm_note": "predates the arm taxonomy; cosine_prior was not recorded in config at this commit",
+      "cosine_prior": null,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.005,
+            "em": 0.71,
+            "f1": 0.757023565323565,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.753,
+            "xi_eff": 87.713125
+          },
+          "mismatch-q": {
+            "constant_baseline_em": 0.005,
+            "em": 0.001,
+            "f1": 0.006664992784992784,
+            "mean_decoder_input_tokens": null,
+            "n": 1000,
+            "substring": 0.003,
+            "xi_eff": 87.713125
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "similarity_topb",
+      "setting": "qdrop0",
+      "split": "trivia"
+    },
+    "hp1_A0": {
+      "arm": "A0",
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.27,
+            "f1": 0.3666472009979671,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.3185,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1505,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.1195,
+            "f1": 0.16884377580298868,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.148,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.1045,
+            "f1": 0.1453607198357199,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.1145,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1035,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.001,
+            "f1": 0.0020987484737484737,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.003,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "dev"
+    },
+    "hp1_C0": {
+      "arm": "C0",
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.361,
+            "f1": 0.4812458874189421,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.417,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2325,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.1285,
+            "f1": 0.18052016657974834,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.156,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3055,
+            "f1": 0.4087606962481957,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.338,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.272,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0335,
+            "f1": 0.03840198412698413,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0365,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "dev"
+    },
+    "hp1_C1": {
+      "arm": "C1",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.371,
+            "f1": 0.4944015914946457,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4225,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2165,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.1545,
+            "f1": 0.22186068270178425,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.1835,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3115,
+            "f1": 0.41057437501009414,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.338,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.278,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0335,
+            "f1": 0.03898285048285048,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0365,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "dev"
+    },
+    "hp1_S": {
+      "arm": "S",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2425,
+            "f1": 0.33558667860478136,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.3105,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.097,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.1455,
+            "f1": 0.20474506956258554,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.181,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0925,
+            "f1": 0.12665503422016586,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.097,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.0895,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.003,
+            "f1": 0.004059498834498834,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0045,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "similarity_topb",
+      "setting": "qdrop1.0",
+      "split": "dev"
+    },
+    "hp2_A1": {
+      "arm": "A1",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.294,
+            "f1": 0.4029617208886291,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.356,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.174,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.12,
+            "f1": 0.16760056505421564,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.1495,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.127,
+            "f1": 0.17238440309690317,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.1435,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1255,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0015,
+            "f1": 0.00238525641025641,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.003,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "dev"
+    },
+    "hp2d0_C1": {
+      "arm": "C1",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.428,
+            "f1": 0.5544589446998007,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4635,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2005,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2275,
+            "f1": 0.3196921649343086,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.245,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0575,
+            "f1": 0.10544974886224896,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0805,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.0575,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0,
+            "f1": 0.0022645965145965145,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.002,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "qdrop0",
+      "split": "dev"
+    },
+    "hp2d0_P": {
+      "arm": "P",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.545,
+            "f1": 0.6821782908125013,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.598,
+            "xi_eff": 13.971155776372578
+          },
+          "evidence_em": 0.327,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.218,
+            "f1": 0.2929016612042926,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.227,
+            "xi_eff": 13.971155776372578
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.053,
+            "f1": 0.09677406657669822,
+            "mean_decoder_input_tokens": 132.667,
+            "n": 2000,
+            "substring": 0.063,
+            "xi_eff": 13.971155776372578
+          },
+          "evidence_em": 0.053,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0,
+            "f1": 0.002180927405927406,
+            "mean_decoder_input_tokens": 132.667,
+            "n": 2000,
+            "substring": 0.001,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "qdrop0",
+      "split": "dev"
+    },
+    "hp2d0_S": {
+      "arm": "S",
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.376,
+            "f1": 0.49533765686927367,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4115,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1305,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2455,
+            "f1": 0.33856237905763004,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2645,
+            "xi_eff": 139.194625
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0675,
+            "f1": 0.10989463628476798,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.081,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.0675,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0,
+            "f1": 0.002434065934065934,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.002,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 0.0,
+      "readout": "similarity_topb",
+      "setting": "qdrop0",
+      "split": "dev"
+    },
+    "w1_A0": {
+      "arm": "A0",
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.6265,
+            "f1": 0.690370862816235,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.7185,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.036,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5905,
+            "f1": 0.6516276910782723,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.679,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.004,
+            "f1": 0.027513718986429073,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.021,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.004,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0,
+            "f1": 0.017720048022889675,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0035,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    },
+    "w1_A1": {
+      "arm": "A1",
+      "cosine_prior": true,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.651,
+            "f1": 0.7207527084800314,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.7565,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.075,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.576,
+            "f1": 0.6449178762865294,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.679,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.059,
+            "f1": 0.11376749886382699,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.1265,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.0575,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0015,
+            "f1": 0.01870073706822933,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0055,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "agnostic",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    },
+    "w1_C0": {
+      "arm": "C0",
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.658,
+            "f1": 0.7186362509250828,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.739,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.072,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.586,
+            "f1": 0.6505261124909177,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.671,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.2775,
+            "f1": 0.3361931431810585,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.3105,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.271,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0065,
+            "f1": 0.022458463758463748,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.0115,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    },
+    "w1_C1": {
+      "arm": "C1",
+      "cosine_prior": true,
+      "dataset": "triviaqa",
+      "modes": {
+        "D0": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.682,
+            "f1": 0.741398337246689,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.761,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.088,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.594,
+            "f1": 0.6566996611505715,
+            "mean_decoder_input_tokens": 70.62,
+            "n": 2000,
+            "substring": 0.6755,
+            "xi_eff": 87.653875
+          }
+        },
+        "D1": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.2675,
+            "f1": 0.3268278692925428,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.2935,
+            "xi_eff": 87.653875
+          },
+          "evidence_em": 0.264,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.0035,
+            "f1": 0.015154882060252896,
+            "mean_decoder_input_tokens": 52.0,
+            "n": 2000,
+            "substring": 0.007,
+            "xi_eff": 87.653875
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_text_dropout": 1.0,
+      "readout": "quro",
+      "setting": "qdrop1.0",
+      "split": "trivia"
+    }
+  }
+}

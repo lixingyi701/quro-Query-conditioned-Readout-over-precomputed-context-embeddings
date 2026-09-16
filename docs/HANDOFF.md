@@ -2,7 +2,13 @@
 
 新会话从这里开始。先读本文，再按需展开。
 
-> **⚠ 本文第 1、2、4 节已被 [`warning_and_target.md`](warning_and_target.md) 推翻或限定，先读那篇。**
+> **⚠ 结果已被 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) 取代（2026-09-17），先读那篇。**
+> 那里有补齐 A0/A1/C0/C1 四格后的 TriviaQA 结果、转到 HotpotQA 多跳后的完整基线对比
+> （含 P 与 S），以及配对检验。两个结论会改变你对下面数字的读法：
+> **① 干活的是可学习读出，不是余弦先验**（C0 单独就追平完整方法，余弦叠加其上无边际贡献）；
+> **② PISCO 原方法 P 在 HotpotQA 的 D0 上赢 C1 11.70 分**，而 prefill 只省 2.08×。
+>
+> **⚠ 本文第 1、2、4 节已被 [`warning_and_target.md`](warning_and_target.md) 推翻或限定。**
 > 关键一条已经过实证审计（2026-09-16，遍历 `/data02/quro/runs/*/config.json`）：
 > **磁盘上每一个 A 臂都带 `cosine_prior: True`**（`d1_A_full`、`m32chunk_A`、
 > `m32cocom_A`、`v2_A_agnostic`；更早的 `gonogo_A_D0` 时期配置里还没有这个字段）。
