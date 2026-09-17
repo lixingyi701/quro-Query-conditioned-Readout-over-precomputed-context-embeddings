@@ -64,6 +64,10 @@ def main():
     ap.add_argument("--top_k", type=int, default=64)
     ap.add_argument("--temperature", type=float, default=2.0)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--train_file", default=None,
+                    help="override the teacher config's train file; the student "
+                         "must then train on the same file, since the cache is "
+                         "keyed by example id")
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--verify_rows", type=int, default=16,
                     help="rows to re-check against a live teacher forward before writing")
@@ -88,6 +92,8 @@ def main():
     print(f"[teacher] {args.teacher} step {step}, readout={cfg.readout.kind}, "
           f"B={cfg.readout.max_budget}")
 
+    if args.train_file:
+        cfg.data.train_file = args.train_file
     path = (cfg.data.train_file if args.split == "train"
             else cfg.data.resolved_eval_files()[args.split])
     if args.split != "train":
