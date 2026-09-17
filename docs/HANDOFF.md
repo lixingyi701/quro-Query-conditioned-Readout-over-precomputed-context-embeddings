@@ -1,26 +1,6 @@
-# 交接状态（截至 2026-09-16）
+# 交接状态（截至 2026-09-17）
 
-新会话从这里开始。先读本文，再按需展开。
-
-> **⚠ 结果已被 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) 取代（2026-09-17），先读那篇。**
-> 那里有补齐 A0/A1/C0/C1 四格后的 TriviaQA 结果、转到 HotpotQA 多跳后的完整基线对比
-> （含 P 与 S），以及配对检验。两个结论会改变你对下面数字的读法：
-> **① 干活的是可学习读出，不是余弦先验**（C0 单独就追平完整方法，余弦叠加其上无边际贡献）；
-> **② PISCO 原方法 P 在 HotpotQA 的 D0 上赢 C1 11.70 分**，而 prefill 只省 2.08×。
->
-> **⚠ 本文第 1、2、4 节已被 [`warning_and_target.md`](warning_and_target.md) 推翻或限定。**
-> 关键一条已经过实证审计（2026-09-16，遍历 `/data02/quro/runs/*/config.json`）：
-> **磁盘上每一个 A 臂都带 `cosine_prior: True`**（`d1_A_full`、`m32chunk_A`、
-> `m32cocom_A`、`v2_A_agnostic`；更早的 `gonogo_A_D0` 时期配置里还没有这个字段）。
-> 余弦先验通过 `cosine_bias()` 给第一层注意力加偏置，是 query 进入 readout 的
-> **第二条独立通路**，`--output_query_mode agnostic` 关不掉它。
-> 所以那些 A 全是 **A1（余弦条件化）**，从来没有跑过真正 query 无关的 A0，
-> 下面第 1 节"比 query 无关版高 20.85 个 EM 点"这句话没有对照组支撑。
-> 新契约测试给出的量级：随机初始化下换 query，A1 输出变化 max|diff|=5.50，
-> 而不带先验的 C0 只有 0.203——被当作对照组的那一臂反而更依赖 query。
->
-> 新臂定义见 `config.ARMS`，用 `scripts/run_arms.sh` 启动；`scripts/run_gonogo.sh`
-> 保持原样以便复现历史运行，但已在脚本头部标注其 A 臂实为 A1。
+新会话从这里开始。本文合并了原先的 HANDOFF 与 `warning_and_target.md`——后者的实施要求已有 W1/W2/W4/W5 完成，留着两份只会让人读到作废的结论。**结果不在本文，在 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)。**
 
 ---
 
@@ -28,121 +8,225 @@
 
 QuRO = **离线 query 无关压缩（复用冻结 PISCO/COCOM）+ 在线 query 条件读出 → B 个 soft token → 冻结 Mistral + LoRA**。
 
-**已证实**：readout 确实能做 query 条件选择——D1 下（decoder 拿不到问题明文）比 query 无关版高 **20.85 个 EM 点，p=1.8e-96**。
+截至目前，三件事已经定了：
 
-**未证实**：标准设定（D0，问题明文在 prompt 里）下这个能力是**冗余的**——7B decoder 自己就完成了证据匹配。C ≈ A ≈ S，两个独立的栈一致。
+1. **可学习读出确实赢 0 参数的余弦规则**——但只在低预算区间。HotpotQA、B=8：+6.15（p=5.5e-10）；B=16：+2.75；**B=32：−0.45（n.s.，S 反超）**。
+2. **PISCO 原方法 P 仍领先 7.70 分**（46.80 vs 54.50），而 prefill 只省 1.53×。这是当前最大的未解决问题。
+3. **预算不是瓶颈。**B 翻 4 倍只多榨出 2.4 分证据值。剩下的解释只有"输出是合成而非选择"和"训练信号不足"两个，下一步就是把它们分开。
 
-**所以当前是定位问题，不是可行性问题。**
-
-详见 [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md)。
-
----
-
-## 2. 主要数字（TriviaQA 全量 2000 条，B=8，D0）
-
-| arm | 含义 | soft token | ξ_eff | substring | EM |
-|---|---|---:|---:|---:|---:|
-| P | PISCO 原样全喂，不二次压缩 | 43.8 | 15.99× | 77.20% | 70.75% |
-| S | 余弦 top-B，**0 可训参数** | 8 | 87.65× | 76.10% | **71.70%** |
-| C | ours（query 条件读出） | 8 | 87.65× | 76.00% | 70.90% |
-
-**注意 P 与 C 不在同一压缩率上**（16× vs 88×）。正确表述：QuRO 在 88× 下 EM 与 PISCO 在 16× 下持平。SeleCom 默认 82×，与我们同工作点。
-
-D1 评测（问题明文删除，soft token 是唯一通道）：
-
-| | EM | substring | 地板（错配文档） |
-|---|---:|---:|---:|
-| C | **26.75%** | 29.35% | 0.35% |
-| A（不看 query） | 5.90% | 12.65% | 0.15% |
+数字与检验见 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)，原始数据见 [`results/arm_matrix.json`](../results/arm_matrix.json)。
 
 ---
 
-## 3. 长期约束（不要违反，理由已论证）
+## 2. 执行原则
 
-1. **v0.3 之前不微调压缩器**（§9）。会把通用缓存绑死到某个 readout，削弱本方法唯一的结构性优势。
-2. **不要现在改 readout 架构**。三个差异极大的 readout 落在 0.5 分以内，改架构是在优化实测为平坦的维度。
-3. **报结论的纪律**（§4，都是踩过的坑）：
-   - 检验先于结论——n=500 时 C 领先 1.6 分，n=2000 时 99 胜 101 负
-   - EM / substring / F1 三个一起报，方向不一致就报「无可靠差异」
-   - 任何精度数字旁边必须有**无证据下界**（错配文档或闭卷）
-   - 跨输出格式的基线不能用 EM（差的是啰嗦程度不是正确率）
+**项目目标是获得可信、可复现的质量或效率收益，不预设 xattn、Perceiver、多槽位或其他具体模块必须有效。** 如果简单规则已经足够，允许简化方法、调整贡献定位；若更复杂的模块在明确条件下有效，再保留它。模块的解释应服从实验结果。
 
----
+- 历史结果保留，不删除、不重命名成修正后的实验；先按真实配置重新标注。
+- 允许调整研究路线，但必须保留负结果，**不能事后更换指标或测试子集来制造收益**。
+- **v0.3 之前不微调压缩器。**目的是控制变量与减少重建缓存成本，不是因为微调必然破坏可缓存性。
 
-## 4. 下一步（按诊断力排序）
+### 报结论的纪律（都是踩过的坑）
 
-> 本节排序已作废，按 `warning_and_target.md` §8 的阶段 1→5 执行：先修对照定义、
-> query 表示与成本计量，再做收益验证。下表保留仅为记录当时的判断。
-> 第 1 项的前提是错的：`--no_residual_readout` 去掉的是**池化旁路**、留下 Δ，
-> 且同时改掉了 `out_proj` 的零初始化，做不了它声称的"Δ 消融"。
-> 现已拆成 `--readout_output_mode {full,pool_only,delta_only}` 与
-> `--out_proj_init {zeros,default}` 两个正交开关，且 `readout_cached(output_mode=...)`
-> 支持同一 checkpoint 上的推理期分支干预。
-
-| # | 实验 | 成本 | 决定什么 |
-|---|---|---|---|
-| 1 | ~~**Δ 消融**（`--no_residual_readout`）~~ 见上方更正 | 一轮训练 ~40min | ~~D1 那 20.85 分来自 α（注意力）还是 Δ（自由分支）？~~ |
-| 2 | **容量上界**（逐样本优化 soft prompt，不训练任何模块） | ~1h | 8×4096 装不装得下？分离「容量」与「可计算性」 |
-| 3 | **COCOM-128 基线**（同 ~82× 的一段式压缩） | 下载 14.5G + 2GB 缓存 | 「两段式结构」是不是真贡献（§8.2 的可证伪假说） |
-| 4 | **B 扫描** `budget_buckets=[1,2,4,8,16]` | 一轮训练给五个点 | 预言：**C−A 随 B 减小而增大**（§7.5）。不增大则「冗余论」被推翻 |
-| 5 | **换数据集**：NQ（本地有原始格式，需转换）、**HotpotQA 多跳** | 转换纯 CPU | TriviaQA 证据空间仅 12.2 分，且单事实问答对多槽位架构最不利 |
-| 6 | **摊薄曲线**（TTFT / GFLOPs / q\*） | — | 目前唯一别人结构上做不出来的图，也是论文真正的卖点 |
-
-**新颖性**：与 RRK(2604.26483) 的切割成立——它输出标量做重排，我们输出喂给生成器的 soft token；RRK 笔记 §9.2 自承未把 query 条件读出作为通用生成问题隔离研究。RRK 的实现仍值得借鉴（尤其「架构可分离 ≠ 训练独立」这一概念）。
+- **检验先于结论**——n=500 时 C 领先 1.6 分，n=2000 时 99 胜 101 负。
+- **EM / substring / F1 三个一起报**，方向不一致就分别报告，不合并成"无差异"。
+- **任何精度数字旁边必须有无证据下界**（错配文档或闭卷）。没有地板的精度数字无法解读：TriviaQA 的 D0 里有 59 分来自闭卷。
+- **不显著 ≠ 等价。**报差值与配对置信区间；欲主张质量保持，实验前约定可接受退化范围。
+- **跨输出格式的基线不能用 EM**（差的是啰嗦程度不是正确率）。
+- **多 seed 与配对统计各解决不同不确定性**，不能互相代替。目前全部结果是单 seed。
+- **开发集与测试集分开。**TriviaQA 那 2000 条已是开发数据；HotpotQA 的 dev/test 已切开，test（5405 条）未动过。
 
 ---
 
-## 5. 现成资产
+## 3. 代码契约：已修的坑
 
-### 缓存（`/data02/quro/cache/`，均为 memmap，可直接用）
+这几条原本是 `warning_and_target` 的 P0，现已实现并有契约测试覆盖（`python tests/test_shapes.py`，66 项）。**留在这里是因为它们描述了当前代码的语义，不是历史记录。**
+
+### W1 ✅ 臂的四格定义
+
+query 有**两条独立通路**进 readout：余弦先验（`cosine_bias()` 给第一层注意力加偏置）和学习式条件化（query 进 output slots）。`--output_query_mode agnostic` 只关后者。
+
+历史上每个 A 臂都带 `cosine_prior: True`，所以全是 A1，真正的 A0 从未跑过。
+
+| 臂 | 余弦先验 | query 进 output slots |
+|---|---|---|
+| A0 | 关 | 关 |
+| A1 | 开 | 关 |
+| C0 | 关 | 开 |
+| C1 | 开 | 开 |
+| S | 余弦 top-B，无可学习槽位 | |
+| P | 全部 latent 直喂 | |
+
+定义在 `config.ARMS`，用 `--arm` 启动。`arm_label()` 把**实际实现的臂**写进 `result.json`，标错的启动会在结果文件里现形。
+
+**参数量**：plain `agnostic` 不创建 query cross-attention block，因此与 C **不是**同参数量。做机制归因时用 `--agnostic_param_matched`（`agnostic_matched`：保留同一个 block，喂固定的可学习占位序列，长度固定所以不泄漏真实 query 长度）。
+
+### W2 ✅ 输出分支与初始化解耦
+
+旧的 `--no_residual_readout` 同时改了输出分支**和** `out_proj` 的初始化，所以它的结果两边都归因不了。现已拆开：
+
+| `--readout_output_mode` | 输出 |
+|---|---|
+| `full` | `s·α·Z + Δ` |
+| `pool_only` | `s·α·Z`（纯选择——"readout"这个名字靠它撑着） |
+| `delta_only` | `Δ`（自由分支——输出是合成的） |
+
+`--out_proj_init {zeros,default}` 独立控制初始化。`readout_cached(output_mode=...)` 支持**同一 checkpoint 上的推理期干预**：它测的是"训好的模型当前依赖什么"，重训某个分支测的是"移除后能补偿多少"，两者回答不同问题、不能互相替代。
+
+### W4 ✅ 两条 query 路分离
+
+`query_shift` 原本同时改 readout 的问题和 decoder prompt 的问题，所以错配下降无法归因。现在拆成 `readout_query_shift` / `decoder_query_shift`，评测变体：
+
+- `mismatch-q`：**只**换 readout 的问题，decoder 仍拿对的 → 下降可归因于读出选错证据
+- `mismatch-q-both`：旧的联动版，保留以对齐历史
+- `mismatch-doc`：换证据，留问题和答案 → **证据地板**
+
+逐题 dump 记录两个问题，以及换进来的问题是否碰巧共享答案（`mismatch_shares_answer`）。
+
+### W5 ⚠ 部分：固定预算已支持，预算分组仍未做
+
+混合预算下 slot 按批内最大 B 生成、小预算事后遮掉，而 **slot self-attention 没有预算掩码**，所以同批的 B=8 行产出的不是它单独运行时的结果。
+
+`FIXED_BUDGET=1 BUDGET=N bash scripts/run_arms.sh ...` 给出单预算训练+评测（关 dropout），B 扫描必须用它。**上自适应预算前，仍需实现预算分组或逐样本 slot mask**，并测单样本执行与混合批执行的输出一致性。
+
+`--budget N` 必须显式传：只改 `budget_buckets` 会被 `max_budget` 过滤掉。
+
+### 其他已修
+
+- **`cosine_bias` 的 NaN**：有效 latent 少于 budget 时 `topk` 取到 −inf，整行 attention 变 −inf，softmax 出 NaN，反传毒化全部权重。B=32 上 C1 曾因此全程训废。**前向输出始终有限、只有梯度是 NaN**——"形状对、无 NaN"的检查抓不到它。
+- **`--preset` 的硬编码选项表**，与 `config.PRESETS` 各写一份，新 preset 被静默挡在外面。现从 `PRESETS` 推导。
+- **`gold_ranks`**：`check_attention_targeting.py` 原本假设 gold 是连续块（`gold_rank` + `n_gold`），HotpotQA 的两篇 gold 只有 21% 相邻。现用 `gold_ranks` 显式记位置，旧格式仍兼容。
+
+---
+
+## 4. 代码契约：未修的坑
+
+### W3 ❌ query encoder 与 decoder LoRA 共享（剩下唯一的 P0）
+
+`GeneratorQueryEncoder` 持有与 decoder **同一个** `lm` 对象。query 前向用 `no_grad`/eval，但 **decoder LoRA 在答案损失下更新，所以后续的 query 表示也会变**。
+
+这不是自动成立的 bug，而是**与"固定 query encoder"这个描述不一致的设计选择**。三个状态不要共用一个 freeze 布尔值：
+
+| 状态 | 准确定义 |
+|---|---|
+| 无 query 路径反传 | query 前向 no_grad，但共享权重可能被其他损失更新（**当前行为**） |
+| 固定 query 表示函数 | query 使用的 backbone、adapter 及一切影响输出的参数均不更新 |
+| 固定离线文档编码器 | 文档缓存对应的 encoder 版本固定；与上述两者都不是一回事 |
+
+**建议**：增加显式 query 表示策略。`fixed_adapter`（共享冻结 backbone，query 用单独的冻结初始 adapter 副本，decoder 用可训练副本）与 `shared_current`（当前行为，作对照）。
+
+验收：固定 query 下训若干 decoder 步后 `fixed_adapter` 的表示在容差内不变；冻结参数 hash 不变而 decoder adapter 确有变化；checkpoint 存取后表示可复现。注意 adapter 切换可能改 `requires_grad`，切换前后可训集合与 optimizer 参数身份必须不变；query 前向后必须恢复 decoder adapter 与 train/eval 状态。
+
+**影响**：目前所有运行都是 `shared_current`（与历史一致），但各臂可比性存疑，精度增益究竟来自 readout 还是 decoder/query 表示共同适配无法区分。
+
+### 成本计量仍未建立
+
+`T_online = T_cache_load + T_query_encode + T_readout + T_prefill + T_decode`，边界要声明。
+
+- **不能漏记 7B 的 query 编码。**QuRO 在线跑的不是只有几十 M 的 readout。实测 A0（两条 query 路全关、跳过编码）的训练步速比其余臂快 36%，就是这笔钱。
+- **evaluate() 不是 serving benchmark。**它在 `generate_answer()` 后又调了一次 `readout_cached()` 收统计，直接计时会重复计算 query/readout。需要独立 benchmark：每条 query 只编码读出一次、GPU warmup、同步计时、报 batch=1 时延与批量吞吐、报热/冷缓存与峰值显存。
+- **三种压缩指标分别报**：evidence token ratio、decoder 输入长度（system/分隔符/问题/soft token 全计）、storage bytes。**不能用 token 压缩率代替存储字节数。**
+- **摊薄比较必须含简单基线**：`Total(Q) = Build + Σ Online(q)`，至少比 C1、S、A0、P。C1/S/A0 共用同一缓存时离线成本基本相同，**C1 若质量无增量且每 query 更贵，文档复用不会自动逆转劣势**。
+
+---
+
+## 5. 实验解释的警告
+
+1. **D1 只作诊断。**看得到问题与完全看不到问题的系统信息不对称，C > A0 不能自动证明证据选择。D1 绝对精度远低于 D0，**不能仅凭缩短 prompt 当作主贡献**。即便 D1 追平 D0，省的只是 prompt 里的问题明文，而在线仍要跑 7B 的 query 编码——那笔钱没省掉，只是换了地方付。
+2. **A0 在 D1 落在地板是结构决定的，不是发现。**D1 删了问题明文，A0 又关掉两条 query 路，系统里没有任何地方存在问题信息。它的作用是管道检查。
+3. **错配文档 ≠ 严格闭卷地板。**不相关证据可能伤害生成。保留无文档与错配文档两种控制，二者都是诊断，不是信息论上下界。
+4. **逐样本优化 soft prompt 不是容量证明。**用 gold 优化成功只说明存在可诱导答案的向量；失败可能只是优化限制。不作 go/no-go 依据。
+5. **P 不是同工作点的对照。**它吐 K×m 个 token（HotpotQA 上 80），C 吐 B 个。正确表述是"在 10× 更少 token 下的质量"，不是"赢了 PISCO"。
+6. **共享缓存是继承能力。**PISCO/COCOM 与 S 都能复用缓存，"一份缓存、多 B、摊薄曲线"不是 QuRO 独占。贡献必须落在可检验的增量。
+7. **冻结 ≠ 通用。**冻结 PISCO 仍可能与特定模型表示空间绑定；跨模型/readout 的可迁移性要单独验证。
+8. **文献区别不代替实验。**RRK 面向重排且最佳配置会微调压缩器；ArcAligner 的内部对齐与外部预算缩减不同。胜过它们不能独立归因为 query 条件化。
+9. **不要改标准数据集的干扰设定。**曾计划给 HotpotQA 补 BM25 干扰段做 K 扫描，已放弃：往标准 distractor 设定里塞干扰会让数字与已发表结果不可比，且加干扰同时让任务对所有方法变难，P 掉下来无法归因到它的 token 数。数据在 `/data02/quro/data/hotpot/{train,dev}_k{20,50}.jsonl`，不用。
+
+---
+
+## 6. 下一步
+
+完整版见 [`ARM_MATRIX_RESULTS.md` §10](ARM_MATRIX_RESULTS.md)。摘要：
+
+| # | 实验 | 决定什么 |
+|---|---|---|
+| **1** | **输出分支干预**（`bs32_C1` 的 checkpoint 跑 full/pool_only/delta_only） | 区分"合成 vs 选择"，**决定新损失加在哪**。纯推理，几分钟。 |
+| **2** | **KL 蒸馏 P**：`loss = CE + λ·KL(P‖C)` | 直接瞄准缺失的 7.70 分。P 已训好、读同一批文档、同一冻结 Mistral。建议离线预存 teacher 的 top-k logits。 |
+| **3** | **gold 注意力监督** | `gold_ranks` 是免费标注，目前一个字没用。**前提是实验 1 判定瓶颈在训练信号。** |
+| 4 | gold 覆盖诊断 | 把"余弦漏第二跳"从符合预测升级成直接观测。 |
+| 5 | 多 seed | 解除单 seed 限定，特别是 B=32 上 `C1−S` 的 −0.45。 |
+| 6 | W3 | 剩下唯一的 P0。 |
+
+**对比学习排在 KL 之后**：它要先定义正负样本，而实验 2、3 的靶子明确得多。
+
+**暂不改 readout 架构**：三个差异极大的 readout 曾落在 0.5 分以内，改架构是在优化实测为平坦的维度。
+
+---
+
+## 7. 运行归档要求
+
+每个正式运行至少保存：run_id、代码 commit（工作区有改动则另存 diff）、完整 config 与实际启动参数；数据 split/版本/hash、缓存 manifest/hash、压缩器与 query/decoder adapter 版本；seed、硬件、dtype、训练样本/更新次数、各 B 采样次数；readout/query encoder/decoder 的实际可训参数量与共享关系；每题 id、预测、gold、指标、B、输入长度及对照类型；质量聚合、配对比较、计时协议。
+
+`scripts/run_arms.sh` 已自动存 `commit.txt` 与 `worktree.diff`。大文件留 `/data02/quro/`，GitHub 只放轻量配置、汇总与可追溯索引。
+
+---
+
+## 8. 现成资产
+
+### 缓存（`/data02/quro/cache/`，均为 memmap）
 
 | 目录 | m | 文档数 | 大小 | 说明 |
 |---|---:|---:|---:|---|
-| `gonogo-pisco-r16` | 8 | 263,890 | 17 GB | **PISCO 原生，最快，默认用这个** |
+| `gonogo-pisco-r16` | 8 | 263,890 | 17 GB | PISCO 原生，TriviaQA/gonogo |
+| `hotpot-pisco-r16` | 8 | 260,236 | 17 GB | **HotpotQA，当前主力**，已过分片级往返校验 |
 | `chunk4-part0` | 32 | 263,890 | 69 GB | PISCO 切块（128→4×32），ξ_off=3.8 |
-| `cocom4-part0` | 32 | 263,890 | 69 GB | COCOM rate 4，**需配 `--generator_path` + `--generator_n_mem 32`** |
+| `cocom4-part0` | 32 | 263,890 | 69 GB | COCOM rate 4，需配 `--generator_path` + `--generator_n_mem 32` |
 
-> `*-part1` 只是构建时的分片来源，已合并进 `part0`，不要单独使用。
+> `*-part1..3` 是构建时的分片来源，已合并进 `part0`，不要单独使用。
 
 ### 数据（`/data02/quro/data/`）
 
 - `gonogo/{corpus,train,dev}.jsonl` — 98k 训练 / 2k dev，含 4 篇随机干扰
-- `trivia/queries.jsonl` — 2000 条评测，含干扰，**主评测集**
-- `all_corpus.jsonl` — 上面两者的语料合并，建缓存用
+- `trivia/queries.jsonl` — 2000 条评测，**已是开发数据**
+- `hotpot/{corpus,train,dev,test}.jsonl` — 260k 段语料；30k 训练 / 2k dev / **5405 test（未动过）**
+- `hotpot/{train,dev}_k{20,50}.jsonl` — K 扫描数据，已放弃，见 §5.9
 
 ### checkpoint（`/data02/quro/runs/*/checkpoint_last.pt`）
 
-`m32chunk_C`、`m32cocom_C`、`d1_C_full`、`d1_A_full`
+主力：`hp2d0_{C1,S,P}`（HotpotQA 主表）、`bs{8,16,32}_C1`、`bs{8,16,32}S_S`、`bs32_C0`（B 扫描）、`w1_{A0,A1,C0,C1}` 与 `hp1_*`（四格分解）。
 
 ### 磁盘
 
-`/data02` 449G 可用。**`/home` 是共享盘、会被别人占满**，大文件一律写 `/data02`。
+`/data02` 449G 可用。**`/home` 是共享盘、会被别人占满，大文件一律写 `/data02`。**
 
 ---
 
-## 6. 常用命令
+## 9. 常用命令
 
 ```bash
-# 训练 + 评测（一臂）
-CUDA_VISIBLE_DEVICES=0 python -m src.train --preset pisco_gonogo \
-  --steps 3000 --num_workers 4 --budget 8 --budget_buckets 4,8 \
-  --eval_budgets 8 --eval_input_modes D0,D1 --doc_control --eval_max_samples 2000 \
-  --eval_files trivia=/data02/quro/data/trivia/queries.jsonl \
+# 臂矩阵（自动存 commit/diff，并核对实际实现的臂）
+PRESET=pisco_hotpot EVAL_FILES="dev=/data02/quro/data/hotpot/dev.jsonl" \
+QDROP=0.0 GPUS="0,1,2,3" PREFIX=run bash scripts/run_arms.sh A0 C0 C1 S P
+
+# 固定单预算（B 扫描必须用）
+FIXED_BUDGET=1 BUDGET=32 GPUS="0" PREFIX=bs32 bash scripts/run_arms.sh C1
+
+# 单臂手工启动
+CUDA_VISIBLE_DEVICES=0 python -m src.train --preset pisco_hotpot \
+  --arm C1 --steps 3000 --num_workers 4 --budget 8 \
+  --eval_input_modes D0 --doc_control --eval_max_samples 2000 \
+  --eval_files dev=/data02/quro/data/hotpot/dev.jsonl \
   --tag NAME --out_dir /data02/quro/runs/NAME
 
-# arm 开关
---prior_mode rank                      # C（ours，默认）
---output_query_mode agnostic           # A（不看 query 的对照）
---readout similarity_topb              # S（0 参数余弦）
---readout pisco_direct                 # P（不二次压缩）
---query_text_dropout 1.0               # 训练时永远不给问题明文
+# 汇总所有运行 + 配对检验 -> results/arm_matrix.json
+python scripts/collect_arm_matrix.py
 
 # 契约测试（纯 CPU，无下载）
-python tests/test_shapes.py            # 31 passed
+python tests/test_shapes.py                                  # 66 passed
 
-# 诊断脚本
+# 诊断
 python scripts/check_query_sensitivity.py --checkpoint ...   # readout 是否响应 query
-python scripts/check_attention_targeting.py --checkpoint ... # 注意力有没有落在 gold 文档
+python scripts/check_attention_targeting.py --checkpoint ... # 注意力有没有落在 gold
 python scripts/check_readout_stats.py --checkpoint ...       # 输出分布、有效支撑、槽间冗余
 python scripts/evidence_subset.py --control ...              # 只在真正依赖证据的题上重算
 ```
@@ -151,21 +235,28 @@ python scripts/evidence_subset.py --control ...              # 只在真正依�
 
 ---
 
-## 7. 踩过的坑（别再踩）
+## 10. 踩过的坑（别再踩）
 
 | 坑 | 症状 | 出处 |
 |---|---|---|
-| 缓存合并索引错位 | 一半文档返回别人的 latent；形状对、无 NaN、读回校验全过 | §4.5，已修 + 加了分片级往返校验 |
-| COCOM mem token 前置 | 因果掩码下所有文档压出同一常数向量 | §4.6，`probe_mem_side()` 实测判定 |
-| `num_workers=0` | GPU 掉到 0%，慢 4 倍 | §10.7.4 |
-| 残差惩罚在初始化点梯度 inf | 全部梯度 NaN | §10.5.7 |
-| LM 逃过 train/eval 模式切换 | LoRA dropout 在评测时仍生效 | §10.5.7 |
-| RG prompt 整体截断 | 问题被静默切掉，跑出低于闭卷的 0.8% | §4 |
-| HF 下载慢 | 10 MB/min → 装 `hf_transfer` 后 1913 MB/min | §10.7.4 |
+| A 臂没关余弦先验 | "query 无关对照"其实看得见 query，结论归因错误 | §3 W1 |
+| `cosine_bias` 遇短行 | 梯度 NaN 而**前向输出正常**，B>16 时全程训废 | §3 |
+| 混合预算批次 | B 小的行被同批 B 大的行污染，slot self-attn 无预算掩码 | §3 W5 |
+| `--preset` 选项表写两份 | 新 preset 被静默挡掉，进程秒退 | §3 |
+| gold 连续块假设 | HotpotQA 两篇 gold 只有 21% 相邻，诊断静默算错 | §3 |
+| 缓存合并索引错位 | 一半文档返回别人的 latent；形状对、无 NaN、读回校验全过 | 已修 + 分片级往返校验 |
+| COCOM mem token 前置 | 因果掩码下所有文档压出同一常数向量 | `probe_mem_side()` 实测判定 |
+| `num_workers=0` | GPU 掉到 0%，慢 4 倍 | |
+| 残差惩罚在初始化点梯度 inf | 全部梯度 NaN | 改用 mean square，不取 sqrt |
+| LM 逃过 train/eval 切换 | LoRA dropout 在评测时仍生效 | |
+| RG prompt 整体截断 | 问题被静默切掉，跑出低于闭卷的 0.8% | |
+| HF 下载慢 | 10 MB/min → 装 `hf_transfer` 后 1913 MB/min；`HF_ENDPOINT=https://hf-mirror.com` 可用 | |
+
+**共同教训**：这些坑里有一半是"形状对、无 NaN、不报错，但语义是错的"。只加针对具体风险的语义契约测试，不以 shape 检查充数。
 
 ---
 
-## 8. 目录约定
+## 11. 目录约定
 
 ```
 article/   别人论文的阅读笔记
@@ -174,3 +265,10 @@ results/   原始实验数据（json）
 src/ scripts/ tests/   代码
 /data02/quro/          模型、缓存、运行输出（不进 git）
 ```
+
+### docs 索引
+
+- [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) — **当前结果**，25 次运行 + 16 组配对检验
+- [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) — 实验设计
+- [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) — v0.2 分析，**其 A 臂结论已被 §3 W1 推翻**
+- [`QURO_RELATED_WORK.md`](QURO_RELATED_WORK.md) — 相关工作与切割

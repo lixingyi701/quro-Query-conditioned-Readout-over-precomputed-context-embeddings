@@ -115,7 +115,7 @@ def test_arms(m=4, h=64, cache_h=64):
     exercised ``cosine_bias`` -- which is the second, independent route by which
     the query reaches the readout.  Every A run on disk had ``cosine_prior=True``,
     so it was A1 and not the query-agnostic control it was reported as
-    (docs/warning_and_target.md W1).  These checks make that unstatable.
+    (docs/HANDOFF.md §3 W1).  These checks make that unstatable.
     """
     torch.manual_seed(0)
     b, k, budget, q_dim = 3, 2, 8, 32
@@ -276,7 +276,7 @@ def test_query_path_separation(cache_dir, train_path, m, h):
     """The readout's question and the decoder's must be shiftable independently.
 
     The old ``query_shift`` moved both at once, so a drop under the mismatch
-    control could not be attributed to the readout (warning_and_target.md W4).
+    control could not be attributed to the readout (HANDOFF.md §3 W4).
     """
     from src.toy import ToyTokenizer
 

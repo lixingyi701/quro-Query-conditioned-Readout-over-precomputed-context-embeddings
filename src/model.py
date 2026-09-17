@@ -252,7 +252,7 @@ class QuROModel(nn.Module):
         Probing one trained checkpoint under full / pool_only / delta_only measures
         what the trained model *currently relies on*; retraining under a mode
         measures what it could compensate for.  They answer different questions and
-        neither substitutes for the other (warning_and_target.md W2).
+        neither substitutes for the other (HANDOFF.md §3 W2).
         """
         latents, document_mask = batch["cached_latents"], batch["document_mask"]
         device = latents.device

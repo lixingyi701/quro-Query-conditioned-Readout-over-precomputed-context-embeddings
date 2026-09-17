@@ -41,10 +41,22 @@ REGISTRY = [
     ("hp1_C0", "hotpotqa", "dev", "qdrop1.0"),
     ("hp1_C1", "hotpotqa", "dev", "qdrop1.0"),
     ("hp1_S", "hotpotqa", "dev", "qdrop1.0"),
-    # HotpotQA, standard training (question in the prompt) -- the main table
+    # HotpotQA, standard training (question in the prompt) -- the main table.
+    # Trained with budget buckets 4,8 and dropout on.
     ("hp2d0_C1", "hotpotqa", "dev", "qdrop0"),
     ("hp2d0_S", "hotpotqa", "dev", "qdrop0"),
     ("hp2d0_P", "hotpotqa", "dev", "qdrop0"),
+    # B sweep: single budget, dropout off, so the points are matched to each
+    # other.  The hp2d0 runs above are NOT matched anchors for this curve -- they
+    # share a budget across buckets, and slot self-attention has no budget mask,
+    # so B=8 there is not the same system as bs8 here (W5).
+    ("bs8_C1", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs16_C1", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs32_C1", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs8S_S", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs16S_S", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs32S_S", "hotpotqa", "dev", "qdrop0/fixedB"),
+    ("bs32_C0", "hotpotqa", "dev", "qdrop0/fixedB"),
     # Historical TriviaQA runs.  These predate the arm taxonomy, and their "A" is
     # A1: the cosine prior was on.  They also used the mismatch-*query* control,
     # so they carry no evidence floor and their evidence use cannot be recovered.
@@ -70,7 +82,17 @@ PAIRED = [
     ("triviaqa", "qdrop1.0", "D1", "w1_C0", "w1_A0"),
     ("triviaqa", "qdrop1.0", "D1", "w1_A1", "w1_A0"),
     ("triviaqa", "qdrop1.0", "D1", "w1_C1", "w1_A1"),
+    # B sweep: is the learnable readout's margin over the cosine rule a
+    # low-budget phenomenon?
+    ("hotpotqa", "qdrop0/fixedB", "D0", "bs8_C1", "bs8S_S"),
+    ("hotpotqa", "qdrop0/fixedB", "D0", "bs16_C1", "bs16S_S"),
+    ("hotpotqa", "qdrop0/fixedB", "D0", "bs32_C1", "bs32S_S"),
+    ("hotpotqa", "qdrop0/fixedB", "D0", "bs32_C1", "bs32_C0"),
 ]
+
+# Runs whose budget is not 8; used to line up predictions files and to label the
+# curve.  Anything absent is B=8.
+BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0": 32}
 
 
 def mcnemar(deltas):
@@ -85,7 +107,8 @@ def mcnemar(deltas):
 
 
 def load_predictions(runs, tag, split, mode):
-    name = f"predictions_{split.replace('/', '_')}_{mode}_B8.json"
+    budget = BUDGETS.get(tag, 8)
+    name = f"predictions_{split.replace('/', '_')}_{mode}_B{budget}.json"
     path = os.path.join(runs, tag, name)
     if not os.path.exists(path):
         return None
@@ -127,11 +150,13 @@ def collect(runs):
 
         for key, agg in record.get("metrics", {}).items():
             name, mode, budget = key.split("|")
-            if budget != "B=8":
-                continue
+            b = int(budget.split("=")[1])
+            # The B sweep evaluates at one budget per run; the earlier runs
+            # evaluate at several.  Key by budget so both fit the same shape.
+            entry.setdefault("budget", b)
             control = "mismatch-doc" if "mismatch-doc" in name else (
                 "mismatch-q" if "mismatch-q" in name else "clean")
-            entry["modes"].setdefault(mode, {})[control] = {
+            entry["modes"].setdefault(f"{mode}|B={b}", {})[control] = {
                 "em": agg["em"], "substring": agg["substring"], "f1": agg["f1"],
                 "n": agg["n"],
                 "constant_baseline_em": agg.get("constant_baseline_em"),

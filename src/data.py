@@ -107,7 +107,7 @@ class QuRODataset(Dataset):
     ``query_shift``
         Legacy: shifts both at once.  Kept so historical runs can be reproduced,
         but a drop under it is *not* attributable to the readout
-        (docs/warning_and_target.md W4).
+        (docs/HANDOFF.md §3 W4).
     """
 
     def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,

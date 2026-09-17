@@ -17,7 +17,7 @@ restricted to that set.  This is a real corpus, not a toy one.
 separable -- cosine top-B would dodge them and S would look far better than it
 is.  BM25 against the question returns paragraphs that share its vocabulary,
 which is the same kind of noise HotpotQA's own 8 distractors are (they were
-TF-IDF retrieved).  warning_and_target §4.2 asks for topical distractors and
+TF-IDF retrieved).  HANDOFF.md §5 asks for topical distractors and
 standard retrieval top-k, reported apart from the gold+random setting.
 
 The gold paragraphs are always kept and re-inserted at random positions, so

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The B=8 arm matrix from docs/warning_and_target.md §4.1.
+# The B=8 arm matrix from docs/HANDOFF.md §3.
 #
 # Why this exists alongside run_gonogo.sh: every A arm that has ever been run
 # carried cosine_prior=True (audited over /data02/quro/runs/*/config.json on
@@ -32,7 +32,7 @@ BUDGET="${BUDGET:-8}"
 # but slot self-attention carries no budget mask, so a B=8 row batched with B=32
 # rows does not produce the same output it would alone.  Sweeping B under mixed
 # batches would measure that contamination rather than the budget
-# (warning_and_target.md W5, which asks for fixed or budget-grouped batches
+# (HANDOFF.md §3 W5, which asks for fixed or budget-grouped batches
 # before any sweep).
 FIXED_BUDGET="${FIXED_BUDGET:-}"
 if [ -n "$FIXED_BUDGET" ]; then
@@ -45,7 +45,7 @@ EVAL_MODES="${EVAL_MODES:-D0,D1}"
 SEED="${SEED:-42}"
 PRESET="${PRESET:-pisco_gonogo}"
 # Only the development split by default.  HotpotQA's test half exists to be left
-# alone until a protocol is locked (warning_and_target §5.9).
+# alone until a protocol is locked (HANDOFF.md §2).
 EVAL_FILES="${EVAL_FILES:-trivia=/data02/quro/data/trivia/queries.jsonl}"
 RUNS="${QURO_RUNS_DIR:-/data02/quro/runs}"
 PREFIX="${PREFIX:-arms}"

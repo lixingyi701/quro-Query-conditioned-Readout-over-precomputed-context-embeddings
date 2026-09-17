@@ -89,7 +89,7 @@ def build_args():
                     choices=["agnostic", "agnostic_matched", "add", "film", "concat", "xattn"],
                     default=None)
     # Sets output_query_mode and cosine_prior together, so an arm cannot be
-    # half-specified the way the historical A runs were (warning_and_target W1).
+    # half-specified the way the historical A runs were (HANDOFF.md §3 W1).
     ap.add_argument("--arm", choices=["A0", "A1", "C0", "C1", "S", "P"], default=None)
     ap.add_argument("--agnostic_param_matched", action="store_true",
                     help="A arms use agnostic_matched, so A and C have equal parameters")
@@ -100,7 +100,7 @@ def build_args():
     ap.add_argument("--d_readout", type=int, default=None)
     # Legacy: equivalent to --readout_output_mode delta_only (and, historically,
     # it also swapped out_proj to the default init -- pass --out_proj_init default
-    # to reproduce that exactly).  See docs/warning_and_target.md W2.
+    # to reproduce that exactly).  See docs/HANDOFF.md §3 W2.
     ap.add_argument("--no_residual_readout", action="store_true")
     ap.add_argument("--readout_output_mode",
                     choices=["full", "pool_only", "delta_only"], default=None)
@@ -233,7 +233,7 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
         # gets the right one, so a drop is attributable to the readout rather than
         # to the decoder being asked something else.  "mismatch-q-both" is the old
         # joint shift, kept for comparability with the historical runs
-        # (docs/warning_and_target.md W4).
+        # (docs/HANDOFF.md §3 W4).
         variants = [(name, 0, 0, 0)]
         if query_control:
             variants.append((name + "/mismatch-q", 1, 0, 0))

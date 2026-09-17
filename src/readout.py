@@ -31,7 +31,7 @@ The two terms are separately switchable via ``output_mode``:
 ``out_proj_init`` is a *separate* knob on purpose.  The legacy
 ``residual_readout=False`` flag changed the output branch and the initialisation
 at the same time, so a drop under it could not be attributed to either -- see
-``docs/warning_and_target.md`` W2.  ``forward(output_mode=...)`` also overrides
+``docs/HANDOFF.md`` §3 W2.  ``forward(output_mode=...)`` also overrides
 the composition at inference time, so one trained checkpoint can be probed under
 all three branches without retraining.  Attributing a gain to "selection" needs
 ``pool_only`` to carry it; a ``delta_only`` model that matches ``full`` means the

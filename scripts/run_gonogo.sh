@@ -16,7 +16,7 @@
 # query-agnostic control; C-minus-A from this script is the value of *learned*
 # conditioning on top of cosine, not the value of query conditioning.  Kept
 # unchanged so the historical runs stay reproducible.
-# See docs/warning_and_target.md W1.
+# See docs/HANDOFF.md §3 W1.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."

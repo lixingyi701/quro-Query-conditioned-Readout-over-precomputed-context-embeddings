@@ -286,7 +286,7 @@ class OutputQueryBuilder(nn.Module):
                : 与 xattn 同构、同参数量，但 K/V 换成固定长度的可学习占位序列，
                  与真实 query 无关。用于机制归因：此时 A 与 C 的唯一差别才真的是
                  "看不看 query"，而不是顺带少了一个 cross-attention block
-                 （见 docs/warning_and_target.md W1 的参数量说明）。
+                 （见 docs/HANDOFF.md §3 W1 的参数量说明）。
       add      : slot + Linear(mean-pool(query tokens))
       film     : slot * (1 + scale(q)) + shift(q)
       concat   : Linear([slot; mean-pool(query)])，对应 e_q 与 P 的拼接

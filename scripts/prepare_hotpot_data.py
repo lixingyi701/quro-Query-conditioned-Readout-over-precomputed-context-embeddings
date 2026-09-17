@@ -25,7 +25,7 @@ Output files follow the same contract as the TriviaQA/gonogo data:
 
 ``dev`` and ``test`` are disjoint halves of the official validation split.  The
 TriviaQA 2000 has been looked at repeatedly and is development data by now
-(warning_and_target.md §5.9); starting HotpotQA with the split already made is
+(HANDOFF.md §2); starting HotpotQA with the split already made is
 cheaper than retrofitting one after the fact.
 
 Paragraph order is left exactly as the dataset shuffled it.  ``gold_ranks``
