@@ -93,7 +93,7 @@ query 有**两条独立通路**进 readout：余弦先验（`cosine_bias()` 给�
 
 `--budget N` 必须显式传：只改 `budget_buckets` 会被 `max_budget` 过滤掉。
 
-### W3 ✅ query 表示策略（2026-09-17 已实现）
+### W3 ⚠ query 表示策略（已实现，但只在单 adapter 主路径上验证）
 
 `GeneratorQueryEncoder` 与 decoder 共用同一个 `lm`，`no_grad` 挡得住梯度、挡不住漂移——decoder 的 LoRA 一更新，query 编码出来的东西就变了。**此前每一次运行都带着这个混淆。**
 
@@ -110,11 +110,14 @@ CLI：`--query_representation {shared_current,fixed_adapter}`。
 
 契约测试（CPU stub）量化了这个混淆：decoder 训 5 步后，`fixed_adapter` 的 query 表示变化 **0.00e+00**，`shared_current` 变化 **7.11e-01**。
 
-实现上三处必须注意：
+**已知边界**：只支持**恰好一个激活 adapter**——`peft.PeftModel.set_adapter` 收单个名字而 transformers 的收列表，多 adapter 集合无法可移植地恢复，所以构造时直接拒绝而不是只恢复第一个。
+
+实现上四处必须注意：
 
 - **`set_adapter` 会把目标 adapter 的 `requires_grad` 设成 True**（PEFT 文档明说）。切换前后都做 `requires_grad` 快照恢复，否则 optimizer 拿到的可训集合会变——而它持有的是 Parameter 对象，症状是 **decoder 静默不训练**，不报错。
 - **`peft.PeftModel` 与 transformers 的 `PeftAdapterMixin` 接口不一致**：`add_adapter` 参数顺序相反，`active_adapters` 一个是属性一个是方法。PISCO 的 decoder 是后者。代码按实际签名分派。
-- **冻结副本不进 checkpoint**（那是 PISCO 原始权重的副本），但**必须在加载训练权重之前构造**，否则复制到的是训练过的 adapter。`query_adapter_hash` 写进 `result.json`，这个错误事后可见。
+- **所有需要生成器空间 query 向量的臂必须走 `QuROModel.query_vector()`。**A1/S 的 `needs_query=False`，不走 encoder 的 forward；旧代码在那里回退到裸 LM 上的 `pool_query_in_generator_space`，**绕过 adapter 切换和 eval 保护**。真实 PISCO 上实测：C1 用 `quro_query_adapter`/eval，而 A1、S 用 `decoder_adapter`/train（LoRA dropout 生效），运行记录却都写 `fixed_adapter`。**这两个臂正是 C1 的对照**，所以这不是标签错误而是对比被污染。
+- **冻结副本随 checkpoint 保存并校验。**它不可训练所以被 `save()` 的过滤漏掉，且**无法从模型路径重建**——`generator_lora_init="random"` 会在复制之前重置 decoder adapter，本地目录也不是不可变版本。现在权重进 checkpoint，hash 不符报错，表示策略两个方向不符也报错（`fixed_adapter` 的 checkpoint 装进 `shared_current` 的模型是另一个系统）。
 
 ### 训练配方（2026-09-17 新增）
 
@@ -123,6 +126,7 @@ CLI：`--query_representation {shared_current,fixed_adapter}`。
 | `--decoder_lr` | readout 从零开始、decoder LoRA 从 PISCO 热启动，此前共用一个学习率。按**模块身份**分组并断言划分，同一张量落进两组会被 AdamW 走两次且不报错 |
 | `--eval_every` / `--eval_every_samples` | 训练中在固定小 dev 片上验证。此前只在最后一步打分，所以"1500 步见顶后过拟合"和"根本没到"无法区分 |
 | `--select_metric` | 决定 `checkpoint_best.pt` 的指标，**运行前固定**，不能看完曲线再挑。最终评测仍打 `checkpoint_last`，所以 best 不会悄悄变成头条数字 |
+| `--warm_start` | 与 `--resume_from` 连用：**只加载权重**，重建 optimizer 与调度。续训和热启动是两回事——续训必须恢复 optimizer/调度/best（否则下一次验证会覆盖更好的 checkpoint），热启动必须不恢复（否则新传的学习率会被存档里的覆盖）。旧 checkpoint 只有一个参数组，分组 LR 下续训会报错，现在给的是可操作的提示而不是 torch traceback |
 
 ### 其他已修
 
