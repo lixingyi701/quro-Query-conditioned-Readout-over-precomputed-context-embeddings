@@ -91,13 +91,22 @@ class GeneratorQueryEncoder(nn.Module):
         self.last_pooled = None              # set by forward(), read by the readout
         self.query_adapter_hash = None
         if representation == "fixed_adapter":
+            active = self._active_adapters(lm)
+            if len(active) > 1:
+                # peft.PeftModel.set_adapter takes a single name while
+                # transformers' takes a list, so restoring a multi-adapter set
+                # after the query forward cannot be done portably.  Refuse here
+                # instead of restoring only the first one and losing the rest.
+                raise ValueError(
+                    f"fixed_adapter needs exactly one active adapter to restore, "
+                    f"found {active}; combining adapters is not supported yet")
             self.query_adapter = self._freeze_adapter_copy(lm, adapter_name)
-            # The frozen copy is taken from the *published* adapter, before any
-            # training, so it is reproducible from the checkpoint path alone and
-            # does not need to be stored.  But "reproducible" has to be checkable:
-            # construct the encoder after loading trained weights and the copy
-            # would silently be of the trained adapter instead.  The hash goes
-            # into the run record so that mistake is visible afterwards.
+            # The copy is of whatever the decoder adapter holds at this moment.
+            # That is the published adapter only when the encoder is built before
+            # any weights are loaded *and* generator_lora_init is not "random"
+            # (which resets the adapter first).  So the copy is not reliably
+            # reconstructible from the model path, and save() stores it; the hash
+            # is what makes a mismatch an error instead of a silent substitution.
             self.query_adapter_hash = self.adapter_hash(lm, self.query_adapter)
 
     @staticmethod
@@ -213,6 +222,22 @@ class GeneratorQueryEncoder(nn.Module):
         return frozen
 
     def forward(self, ids, mask=None):
+        return self._encode(ids, mask)[0]
+
+    def pooled(self, ids, mask=None):
+        """Sentence vector only, through the *same* controls as ``forward``.
+
+        The cosine prior and the non-parametric top-B arm need this vector but
+        not the per-token states, and they used to obtain it by calling
+        ``pool_query_in_generator_space`` on the raw LM.  That path skipped both
+        the adapter switch and the eval-mode guard, so A1 and S kept encoding
+        their queries through the *current* decoder adapter under LoRA dropout
+        while a run tagged ``fixed_adapter`` claimed otherwise -- and those are
+        exactly the control arms C1 is compared against.
+        """
+        return self._encode(ids, mask)[1]
+
+    def _encode(self, ids, mask=None):
         if mask is None:
             mask = torch.ones_like(ids, dtype=torch.bool)
         lm = self._lm[0]
@@ -236,11 +261,15 @@ class GeneratorQueryEncoder(nn.Module):
                     lm, ids, mask, self.pooling)
         finally:
             if switching:
+                # Restoring a multi-adapter set is not uniformly supported --
+                # transformers' set_adapter takes a list, peft.PeftModel takes a
+                # single name -- so the constructor rejects that case rather than
+                # letting this line silently drop everything after the first.
                 lm.set_adapter(previous[0] if previous else self.decoder_adapter)
                 self._restore_grads(lm, grads)
             lm.train(was_training)
         self.last_pooled = pooled
-        return hidden
+        return hidden, pooled
 
 
 class QueryBudgetSelector(nn.Module):
@@ -404,6 +433,32 @@ class QuROModel(nn.Module):
             raise ValueError(f"budgets {sorted(set(bad))} are outside buckets {sorted(allowed)}")
         return budgets, logits
 
+    def query_vector(self, batch):
+        """Generator-space sentence vector, through the configured representation.
+
+        Every arm that needs this vector must come through here.  A1 (agnostic
+        slots + cosine prior) and S (non-parametric top-B) have
+        ``needs_query=False``, so they never call the encoder's forward, and the
+        old code fell back to ``pool_query_in_generator_space`` on the raw LM --
+        skipping the adapter switch and the eval-mode guard.  The effect was that
+        the two control arms encoded their queries through the *current* decoder
+        adapter under LoRA dropout while the run record said ``fixed_adapter``.
+        Since those arms are what C1's margin is measured against, the bypass
+        biased the comparison rather than merely mislabelling it.
+        """
+        cached = getattr(self.query_encoder, "last_pooled", None)
+        if cached is not None:
+            return cached
+        pooled = getattr(self.query_encoder, "pooled", None)
+        if callable(pooled):
+            return pooled(batch["query_gen_ids"][:, :self.cfg.data.max_query_len],
+                          batch["query_gen_mask"][:, :self.cfg.data.max_query_len])
+        # Encoders that are not the generator (toy, hf) have no adapter to switch
+        # and no shared dropout, so the raw call is equivalent for them.
+        return pool_query_in_generator_space(
+            self.lm, batch["query_gen_ids"], batch["query_gen_mask"],
+            self.cfg.query_encoder.pooling)
+
     # -- readout --------------------------------------------------------
     def readout_cached(self, batch, budget=None, return_attn=False, output_mode=None):
         """``output_mode`` overrides the readout's output branch for this call only.
@@ -430,12 +485,7 @@ class QuROModel(nn.Module):
         # cosine prior its attention starts from.
         kwargs = {}
         if isinstance(self.readout, SimilarityTopBReadout) or self.uses_cosine_prior:
-            vector = getattr(self.query_encoder, "last_pooled", None)
-            if vector is None:
-                vector = pool_query_in_generator_space(
-                    self.lm, batch["query_gen_ids"], batch["query_gen_mask"],
-                    self.cfg.query_encoder.pooling)
-            kwargs["query_vector"] = vector
+            kwargs["query_vector"] = self.query_vector(batch)
         if output_mode is not None:
             if not isinstance(self.readout, QuroReadout):
                 raise ValueError(
@@ -561,17 +611,75 @@ class QuROModel(nn.Module):
             "config": asdict(self.cfg),
             "step": step,
         }
+        # The frozen query adapter is not trainable, so the filter above drops it
+        # -- and it cannot be reconstructed from the checkpoint path alone: with
+        # generator_lora_init="random" the decoder adapter is reset *before* the
+        # copy is taken, and a local model directory is not an immutable version
+        # either.  Store the weights and the hash so a reload restores exactly
+        # what was trained against instead of whatever the path happens to hold.
+        adapter = getattr(self.query_encoder, "query_adapter", None)
+        if adapter is not None:
+            payload["query_adapter"] = {
+                "name": adapter,
+                "representation": self.query_encoder.representation,
+                "hash": self.query_encoder.query_adapter_hash,
+                "state": {name: value.detach().cpu()
+                          for name, value in self.lm.state_dict().items()
+                          if f".{adapter}." in name},
+            }
+        payload["query_representation"] = getattr(
+            self.query_encoder, "representation", None)
         if optimizer is not None:
             payload["optimizer"] = optimizer.state_dict()
         if scheduler is not None:
             payload["scheduler"] = scheduler.state_dict()
         torch.save(payload, path)
 
+    def _restore_query_adapter(self, ckpt) -> None:
+        """Put back the frozen query adapter, and refuse a silent mismatch.
+
+        Rebuilding the copy from the model path is not enough to call the run
+        reproducible, so the weights travel with the checkpoint.  Both directions
+        are errors: loading a fixed_adapter checkpoint into a shared_current model
+        would evaluate a different system under the same name, and the reverse
+        would leave a frozen adapter in place that the run never trained against.
+        """
+        saved = ckpt.get("query_adapter")
+        want = ckpt.get("query_representation")
+        have = getattr(self.query_encoder, "representation", None)
+        if want is not None and have is not None and want != have:
+            raise ValueError(
+                f"checkpoint was trained with query representation {want!r} but "
+                f"this model is built with {have!r}; they are different systems")
+        if saved is None:
+            return
+        adapter = getattr(self.query_encoder, "query_adapter", None)
+        if adapter is None:
+            raise ValueError(
+                "checkpoint carries a frozen query adapter but this model has "
+                "none; rebuild it with --query_representation fixed_adapter")
+        state = {name.replace(f".{saved['name']}.", f".{adapter}."): value
+                 for name, value in saved["state"].items()}
+        if not state:
+            raise ValueError("checkpoint's query adapter payload is empty")
+        self.lm.load_state_dict(state, strict=False)
+        for name, parameter in self.lm.named_parameters():
+            if f".{adapter}." in name:
+                parameter.requires_grad_(False)
+        digest = GeneratorQueryEncoder.adapter_hash(self.lm, adapter)
+        if saved.get("hash") and digest != saved["hash"]:
+            raise ValueError(
+                f"the frozen query adapter restored to hash {digest} but the "
+                f"checkpoint recorded {saved['hash']}; the query representation "
+                "does not match the one that was trained against")
+        self.query_encoder.query_adapter_hash = digest
+
     def load(self, path, strict=False, optimizer=None, scheduler=None):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)
+        self._restore_query_adapter(ckpt)
         if optimizer is not None and "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
         if scheduler is not None and "scheduler" in ckpt:

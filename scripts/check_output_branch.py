@@ -1,33 +1,34 @@
 """Is the readout *selecting* evidence, or *synthesising* it?
 
-The output is ``E = s * AttnPool(alpha, Z) + Delta``: a pooling branch that
-returns a convex mixture of the cached latents themselves, and a free branch that
-can emit anything.  Everything the method claims rests on the first one.  If the
-answer is carried by ``Delta``, then ``alpha`` is not the causal path, "readout"
-is the wrong name, and -- concretely -- supervising the attention towards the
-gold paragraphs would train a branch that does not drive the output.
+The output is ``E = s * AttnPool(alpha, Z) + Delta``: a pooling branch returning a
+convex mixture of the cached latents themselves, and a branch that projects the
+attended slots through a learned map.  This measures which one the trained model
+currently leans on.
 
-This is why the question comes before the choice of auxiliary loss rather than
-after it.
+What it does **not** establish, despite the temptation:
 
-The intervention is at inference: one trained checkpoint, evaluated three times
-with only the output composition changed.  That measures what the trained model
-*currently relies on*.  It does not measure what it could compensate for if
-retrained under a branch -- that needs a retrain, and the two answer different
-questions (HANDOFF.md §3 W2).
+*It is not "selection versus synthesis".*  ``Delta`` is computed from the same
+attended memory -- ``out_proj(out_norm(slots))`` where ``slots`` came out of the
+cross-attention -- so a working ``delta_only`` would not show that attention is
+off the causal path.  The split is raw-latent mixture versus transformed
+representation.
 
-Reading the result:
+*``pool_only`` is not discrete selection either.*  It is an attention-weighted
+average over every latent in memory; peakedness is a separate measurement
+(``check_readout_stats.py`` reports effective support).
 
-``pool_only`` near ``full``    the output is selection; attention is the causal
-                              path and is worth supervising.
-``pool_only`` collapses,      the output is synthesised.  Auxiliary losses should
-``delta_only`` near ``full``  target the output distribution (KL), not attention.
-both degrade                  the two branches are jointly required and neither
-                              alone is interpretable as the mechanism.
+*It does not pick the next training objective.*  Branch dependence and what a
+loss should target are different questions, and no threshold on the first answers
+the second.
 
-The mismatch-document control runs under every branch too: a branch that keeps
-its score by falling back on the decoder's parametric memory is not keeping it by
-reading evidence, and only the gap to that floor distinguishes the two.
+The intervention is at inference: one checkpoint, three evaluations differing
+only in output composition.  Retraining under a branch measures something else --
+what the model could compensate for -- and neither substitutes for the other
+(HANDOFF.md §3 W2).
+
+The mismatch-document control runs under every branch, because a branch that
+keeps its score off the decoder's parametric memory is not keeping it by reading
+evidence, and only the gap to that floor separates the two.
 
     python scripts/check_output_branch.py --run /data02/quro/runs/bs32_C1 --budget 32
 """
@@ -149,15 +150,17 @@ def main():
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"wrote {out}")
 
-    if "full" in report["modes"] and "pool_only" in report["modes"]:
-        full = report["modes"]["full"]["clean"]["em"]
-        pool = report["modes"]["pool_only"]["clean"]["em"]
-        share = pool / full if full else float("nan")
-        print(f"\npool_only keeps {100*share:.1f}% of full's EM"
-              + ("  -> the output is selection; attention is worth supervising"
-                 if share > 0.8 else
-                 "  -> the output is largely synthesised; target the output "
-                 "distribution, not attention"))
+    # Deliberately no automatic verdict.  A threshold on pool_only/full would be
+    # arbitrary, and the inference it invited is unsound: Delta is computed from
+    # the *same* attended memory, so a working delta_only would not show that
+    # attention is off the causal path.  What the three numbers establish is which
+    # branch the trained model currently leans on -- not which training objective
+    # to add next.  Report them and read them against the floor.
+    print("\nbranch dependence of the trained model (not a verdict on the loss):")
+    for mode, entry in report["modes"].items():
+        print(f"  {mode:<11} EM={100*entry['clean']['em']:.2f}  "
+              f"floor={100*entry['mismatch-doc']['em']:.2f}  "
+              f"evidence={100*entry['evidence_em']:.2f}")
 
 
 if __name__ == "__main__":

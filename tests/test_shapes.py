@@ -434,6 +434,164 @@ def test_query_representation():
           not torch.allclose(drift_before, drift_after, atol=1e-6),
           f"max|diff|={float((drift_before - drift_after).abs().max()):.2e}")
 
+    # A1 and S never call forward() -- needs_query is False -- and used to reach
+    # the raw LM instead, skipping both the adapter switch and the eval guard.
+    # pooled() is the entry point they must come through.
+    lm.train()
+    pooled_train = encoder.pooled(ids, mask)
+    check("pooled() applies the same controls as forward()",
+          torch.allclose(pooled_train, encoder.pooled(ids, mask), atol=1e-7)
+          and lm.training
+          and encoder._active_adapters(lm)[0] == "decoder_adapter")
+    check("pooled() agrees with forward()'s pooled vector",
+          torch.allclose(pooled_train, encoder.last_pooled, atol=1e-7))
+
+
+def test_query_vector_routing():
+    """A1 and S must not reach the raw LM behind the representation strategy.
+
+    Both have ``needs_query=False``, so ``readout_cached`` never calls the
+    encoder's forward, and the old fallback used
+    ``pool_query_in_generator_space`` on the raw LM -- skipping the adapter switch
+    and the eval-mode guard.  The two arms C1's margin is measured against were
+    therefore encoding queries differently from C1 while the run record said
+    ``fixed_adapter``, so the bypass biased the comparison rather than merely
+    mislabelling it.
+    """
+    from types import SimpleNamespace
+
+    from src import model as model_module
+    from src.model import QuROModel
+
+    raw_calls = {"n": 0}
+    original = model_module.pool_query_in_generator_space
+
+    def counting(*args, **kwargs):
+        raw_calls["n"] += 1
+        return torch.zeros(2, 4)
+
+    ids = torch.tensor([[1, 2, 3], [4, 5, 0]])
+    mask = torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.bool)
+    batch = {"query_gen_ids": ids, "query_gen_mask": mask}
+    cfg = SimpleNamespace(data=SimpleNamespace(max_query_len=8),
+                          query_encoder=SimpleNamespace(pooling="mean"))
+
+    # A generator-style encoder: query_vector must use its pooled(), never the
+    # module-level helper.
+    seen = {"pooled": 0}
+
+    def pooled(a, b):
+        seen["pooled"] += 1
+        return torch.ones(2, 4)
+
+    generator_like = SimpleNamespace(last_pooled=None, pooled=pooled)
+    model_module.pool_query_in_generator_space = counting
+    try:
+        vector = QuROModel.query_vector(
+            SimpleNamespace(query_encoder=generator_like, cfg=cfg, lm=None), batch)
+        check("A1/S go through the encoder, not the raw LM",
+              seen["pooled"] == 1 and raw_calls["n"] == 0 and float(vector.mean()) == 1.0,
+              f"pooled={seen['pooled']} raw={raw_calls['n']}")
+
+        # A cached vector from this batch's forward wins, so C1 does not pay a
+        # second 7B encode -- that was the point of last_pooled.
+        cached = SimpleNamespace(last_pooled=torch.full((2, 4), 7.0), pooled=pooled)
+        vector = QuROModel.query_vector(
+            SimpleNamespace(query_encoder=cached, cfg=cfg, lm=None), batch)
+        check("a vector already computed this step is reused, not recomputed",
+              seen["pooled"] == 1 and float(vector.mean()) == 7.0)
+
+        # Encoders that are not the generator have no adapter and no shared
+        # dropout, so the raw call stays correct for them.
+        plain = SimpleNamespace(last_pooled=None)
+        QuROModel.query_vector(
+            SimpleNamespace(query_encoder=plain, cfg=cfg, lm=None), batch)
+        check("a non-generator encoder still falls back to the plain helper",
+              raw_calls["n"] == 1)
+    finally:
+        model_module.pool_query_in_generator_space = original
+
+
+def test_query_adapter_checkpoint():
+    """A frozen query adapter must travel with the checkpoint and be verified.
+
+    It is not trainable, so the generator-state filter drops it, and it cannot be
+    rebuilt from the model path either: with ``generator_lora_init="random"`` the
+    decoder adapter is reset *before* the copy is taken, and a local directory is
+    not an immutable version.  Restoring a checkpoint against a different frozen
+    adapter used to succeed silently -- a different system under the same name.
+    """
+    from src.model import GeneratorQueryEncoder, QuROModel
+
+    class Stub:
+        """Only the pieces ``_restore_query_adapter`` touches."""
+
+        def __init__(self, adapter, weights, representation="fixed_adapter"):
+            # Nested modules, so named_parameters() yields the dotted path the
+            # adapter matching relies on; register_parameter rejects dots.
+            leaf = torch.nn.Module()
+            leaf.weight = torch.nn.Parameter(weights.clone())
+            holder = torch.nn.Module()
+            setattr(holder, adapter, leaf)
+            self.lm = torch.nn.Module()
+            self.lm.base = holder
+            self.query_encoder = type("E", (), {})()
+            self.query_encoder.query_adapter = adapter
+            self.query_encoder.representation = representation
+            self.query_encoder.query_adapter_hash = GeneratorQueryEncoder.adapter_hash(
+                self.lm, adapter)
+
+    torch.manual_seed(0)
+    weights = torch.randn(4, 4)
+    trained = Stub("quro_query_adapter", weights)
+    payload = {
+        "query_representation": "fixed_adapter",
+        "query_adapter": {
+            "name": "quro_query_adapter",
+            "representation": "fixed_adapter",
+            "hash": trained.query_encoder.query_adapter_hash,
+            "state": {"base.quro_query_adapter.weight": weights.clone()},
+        },
+    }
+
+    # A model rebuilt with a *different* frozen adapter must end up with the saved
+    # one, not its own.
+    rebuilt = Stub("quro_query_adapter", torch.randn(4, 4))
+    different = rebuilt.query_encoder.query_adapter_hash
+    QuROModel._restore_query_adapter(rebuilt, payload)
+    check("loading restores the checkpoint's frozen query adapter",
+          rebuilt.query_encoder.query_adapter_hash == payload["query_adapter"]["hash"]
+          and different != payload["query_adapter"]["hash"])
+    check("the restored adapter stays frozen",
+          not any(p.requires_grad for n, p in rebuilt.lm.named_parameters()
+                  if "quro_query_adapter" in n))
+
+    # A corrupted payload must raise rather than load something else.
+    corrupt = dict(payload)
+    corrupt["query_adapter"] = dict(payload["query_adapter"], hash="deadbeefdeadbeef")
+    try:
+        QuROModel._restore_query_adapter(Stub("quro_query_adapter", weights), corrupt)
+        check("a hash mismatch is rejected", False)
+    except ValueError:
+        check("a hash mismatch is rejected", True)
+
+    # Strategy mismatch in both directions is a different system, not a warning.
+    shared = Stub("quro_query_adapter", weights, representation="shared_current")
+    shared.query_encoder.query_adapter = None
+    try:
+        QuROModel._restore_query_adapter(shared, payload)
+        check("loading a fixed_adapter checkpoint into shared_current is rejected", False)
+    except ValueError:
+        check("loading a fixed_adapter checkpoint into shared_current is rejected", True)
+
+    fixed = Stub("quro_query_adapter", weights)
+    try:
+        QuROModel._restore_query_adapter(
+            fixed, {"query_representation": "shared_current"})
+        check("loading a shared_current checkpoint into fixed_adapter is rejected", False)
+    except ValueError:
+        check("loading a shared_current checkpoint into fixed_adapter is rejected", True)
+
 
 def test_arm_labels():
     """A config must report the arm it implements, not the arm it is tagged."""
@@ -563,6 +721,8 @@ def main():
         test_output_modes(m, h, h)
         test_arm_labels()
         test_query_representation()
+        test_query_vector_routing()
+        test_query_adapter_checkpoint()
         test_query_path_separation(cache_dir, train_path, m, h)
         test_baselines(m, h)
         test_cache(cache_dir, doc_ids, m, h)

@@ -83,6 +83,9 @@ def build_args():
                     help="separate LR for the decoder LoRA; defaults to --lr")
     ap.add_argument("--grad_accum", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--warm_start", action="store_true",
+                    help="with --resume_from: load weights only, and build a fresh "
+                         "optimiser and schedule instead of continuing the old run")
     ap.add_argument("--eval_every", type=int, default=None,
                     help="validate every N steps on a small dev slice; 0 disables")
     ap.add_argument("--eval_every_samples", type=int, default=None)
@@ -455,9 +458,37 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lr_lambda_factory(cfg.train.steps, cfg.train.warmup_ratio))
     start_step = 0
+    best = {"metric": float("-inf"), "step": None}
     if cfg.train.resume_from:
-        _, _, saved = model.load(cfg.train.resume_from, optimizer=optimizer, scheduler=scheduler)
-        start_step = int(saved or 0)
+        # Two different things were both called "resume".  Continuing a run has to
+        # restore the optimiser, the schedule and the best-so-far, or the next
+        # validation overwrites a better checkpoint with a worse one.  Starting a
+        # new run from trained weights must NOT restore them, or the freshly
+        # requested learning rates are silently overwritten by the saved ones.
+        if args.warm_start:
+            model.load(cfg.train.resume_from)
+            print(f"[init] warm start from {cfg.train.resume_from}: weights only, "
+                  f"fresh optimiser and schedule")
+        else:
+            try:
+                _, _, saved = model.load(cfg.train.resume_from,
+                                         optimizer=optimizer, scheduler=scheduler)
+            except ValueError as error:
+                # Old checkpoints were written with a single parameter group; the
+                # grouped optimiser has two, and torch rejects the mismatch.
+                raise SystemExit(
+                    f"cannot resume optimiser state from {cfg.train.resume_from}: "
+                    f"{error}\nThis checkpoint predates grouped learning rates. "
+                    "Pass --warm_start to load the weights and start a fresh "
+                    "optimiser, or resume without --decoder_lr on the old code.")
+            start_step = int(saved or 0)
+            best_path = os.path.join(os.path.dirname(cfg.train.resume_from),
+                                     "best_checkpoint.json")
+            if os.path.exists(best_path):
+                with open(best_path, encoding="utf-8") as f:
+                    best = json.load(f)
+                print(f"[init] resumed at step {start_step}; best so far "
+                      f"{best.get('metric')} at step {best.get('step')}")
 
     # Interval validation on a small, fixed dev slice.  It exists to answer
     # "was 3000 steps too few, or is the capacity not there" -- a question the
@@ -479,7 +510,6 @@ def main():
         print(f"[val] every {cfg.train.eval_every} steps on {len(small)} rows of "
               f"{name}, selecting on {cfg.train.select_metric}")
 
-    best = {"metric": float("-inf"), "step": None}
     iterator = cycle(train_loader)
     model.train()
     rng = random.Random(cfg.train.seed)
