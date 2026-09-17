@@ -318,6 +318,123 @@ def test_query_path_separation(cache_dir, train_path, m, h):
               for r in readout_only))
 
 
+def test_query_representation():
+    """W3: ``fixed_adapter`` must make the query a genuinely fixed function.
+
+    With ``kind="generator"`` the query encoder and the decoder are one object, so
+    ``no_grad`` stops gradient but not drift: training the decoder's LoRA changes
+    what the query encodes into.  ``fixed_adapter`` encodes the query through a
+    frozen copy taken at init instead.
+
+    Switching adapters is the risky part.  PEFT documents that ``set_adapter``
+    sets the target adapter to ``requires_grad=True``, so a careless switch hands
+    the optimiser a different trainable set -- and because the optimiser holds the
+    Parameter objects, that shows up as the decoder silently not training rather
+    than as an error.  These checks cover the four acceptance criteria in
+    docs/TRAINING_STRATEGY_REVIEW_AND_PLAN.md §5.2.
+    """
+    try:
+        from peft import LoraConfig, get_peft_model
+    except ImportError:
+        check("query representation (peft unavailable, skipped)", True)
+        return
+
+    from types import SimpleNamespace
+
+    from src.model import GeneratorQueryEncoder
+
+    from transformers import PretrainedConfig
+
+    class TinyLM(torch.nn.Module):
+        """Smallest object satisfying the LM interface the query path uses.
+
+        ``config`` has to be a real ``PretrainedConfig``: PEFT probes it with
+        ``.get``, so a plain namespace fails at injection time.
+        """
+
+        def __init__(self, vocab=32, dim=16):
+            super().__init__()
+            self.config = PretrainedConfig(hidden_size=dim)
+            self.embed = torch.nn.Embedding(vocab, dim)
+            self.q_proj = torch.nn.Linear(dim, dim)
+
+        def forward(self, input_ids=None, attention_mask=None,
+                    output_hidden_states=False, **_):
+            hidden = self.q_proj(self.embed(input_ids))
+            return SimpleNamespace(hidden_states=(hidden,), last_hidden_state=hidden)
+
+    torch.manual_seed(0)
+    base = TinyLM()
+    lm = get_peft_model(base, LoraConfig(r=4, target_modules=["q_proj"],
+                                         lora_alpha=8, lora_dropout=0.0),
+                        adapter_name="decoder_adapter")
+    for name, parameter in lm.named_parameters():
+        parameter.requires_grad_("lora_" in name and "decoder_adapter" in name)
+    trainable_before = {n for n, p in lm.named_parameters() if p.requires_grad}
+
+    encoder = GeneratorQueryEncoder(lm, pooling="mean", representation="fixed_adapter",
+                                    adapter_name="decoder_adapter")
+    check("fixed_adapter creates a frozen query adapter",
+          encoder.query_adapter is not None and encoder.query_adapter_hash is not None)
+    check("the frozen copy is not trainable",
+          not any(p.requires_grad for n, p in lm.named_parameters()
+                  if encoder.query_adapter in n))
+    check("creating the copy leaves the decoder's trainable set unchanged",
+          {n for n, p in lm.named_parameters() if p.requires_grad} == trainable_before,
+          f"{len(trainable_before)} tensors")
+
+    ids = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 0]])
+    mask = torch.tensor([[1, 1, 1, 1], [1, 1, 1, 0]], dtype=torch.bool)
+    lm.train()
+    before = encoder(ids, mask).clone()
+    check("adapter and mode are restored after a query forward",
+          lm.training and encoder._active_adapters(lm)[0] == "decoder_adapter")
+    check("requires_grad is restored after a query forward",
+          {n for n, p in lm.named_parameters() if p.requires_grad} == trainable_before)
+
+    # Criterion 1/2: train the decoder adapter, then re-encode the same query.
+    optimiser = torch.optim.SGD([p for p in lm.parameters() if p.requires_grad], lr=0.5)
+    for _ in range(5):
+        optimiser.zero_grad()
+        lm(input_ids=ids, attention_mask=mask.long(),
+           output_hidden_states=True).hidden_states[-1].pow(2).mean().backward()
+        optimiser.step()
+    moved = any(p.grad is not None and float(p.grad.abs().max()) > 0
+                for n, p in lm.named_parameters() if p.requires_grad)
+    check("the decoder adapter really did update", moved)
+
+    after = encoder(ids, mask)
+    check("fixed_adapter: the query representation is unchanged by decoder training",
+          torch.allclose(before, after, atol=1e-6),
+          f"max|diff|={float((before - after).abs().max()):.2e}")
+    check("the frozen adapter's hash is unchanged",
+          GeneratorQueryEncoder.adapter_hash(lm, encoder.query_adapter)
+          == encoder.query_adapter_hash)
+
+    # The control: shared_current must drift, or the comparison is vacuous.
+    torch.manual_seed(0)
+    base2 = TinyLM()
+    lm2 = get_peft_model(base2, LoraConfig(r=4, target_modules=["q_proj"],
+                                           lora_alpha=8, lora_dropout=0.0),
+                         adapter_name="decoder_adapter")
+    for name, parameter in lm2.named_parameters():
+        parameter.requires_grad_("lora_" in name and "decoder_adapter" in name)
+    shared = GeneratorQueryEncoder(lm2, pooling="mean", representation="shared_current",
+                                   adapter_name="decoder_adapter")
+    check("shared_current creates no extra adapter", shared.query_adapter is None)
+    drift_before = shared(ids, mask).clone()
+    optimiser2 = torch.optim.SGD([p for p in lm2.parameters() if p.requires_grad], lr=0.5)
+    for _ in range(5):
+        optimiser2.zero_grad()
+        lm2(input_ids=ids, attention_mask=mask.long(),
+            output_hidden_states=True).hidden_states[-1].pow(2).mean().backward()
+        optimiser2.step()
+    drift_after = shared(ids, mask)
+    check("shared_current: the query representation DOES drift with the decoder",
+          not torch.allclose(drift_before, drift_after, atol=1e-6),
+          f"max|diff|={float((drift_before - drift_after).abs().max()):.2e}")
+
+
 def test_arm_labels():
     """A config must report the arm it implements, not the arm it is tagged."""
     from config import apply_arm, arm_label, get_config
@@ -445,6 +562,7 @@ def main():
         test_cosine_prior_short_rows(m, h, h)
         test_output_modes(m, h, h)
         test_arm_labels()
+        test_query_representation()
         test_query_path_separation(cache_dir, train_path, m, h)
         test_baselines(m, h)
         test_cache(cache_dir, doc_ids, m, h)

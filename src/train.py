@@ -105,6 +105,12 @@ def build_args():
     ap.add_argument("--readout_output_mode",
                     choices=["full", "pool_only", "delta_only"], default=None)
     ap.add_argument("--out_proj_init", choices=["zeros", "default"], default=None)
+    # "frozen query encoder" was never true for kind=generator: the encoder and
+    # the decoder are one object, so the decoder's LoRA updates move the query
+    # representation.  fixed_adapter makes it an actual fixed function; the
+    # default keeps the historical behaviour so old runs stay reproducible.
+    ap.add_argument("--query_representation",
+                    choices=["shared_current", "fixed_adapter"], default=None)
     ap.add_argument("--no_cosine_prior", action="store_true")
     ap.add_argument("--prior_mode", choices=["rank", "shared"], default=None)
     ap.add_argument("--tau_init", type=float, default=None)
@@ -185,6 +191,8 @@ def apply_overrides(cfg, args):
         cfg.readout.residual_readout = (args.readout_output_mode == "full")
     if args.out_proj_init:
         cfg.readout.out_proj_init = args.out_proj_init
+    if args.query_representation:
+        cfg.query_encoder.representation = args.query_representation
     if args.no_cosine_prior:
         cfg.readout.cosine_prior = False
     if args.prior_mode:
@@ -326,6 +334,11 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "output_query_mode": cfg.readout.output_query_mode,
         "cosine_prior": cfg.readout.cosine_prior,
         "arm": arm_label(cfg),
+        # Not cosmetic: under shared_current the query representation drifts with
+        # the decoder LoRA, so two runs differing only in this flag are not the
+        # same system and must not be pooled.
+        "query_representation": cfg.query_encoder.representation,
+        "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
         "readout_output_mode": cfg.readout.output_mode,
         "out_proj_init": cfg.readout.out_proj_init,
         "generator_lora_init": cfg.generator.lora_init,
@@ -389,7 +402,10 @@ def main():
     stack.lm.to(device)
     cfg.to_json(os.path.join(cfg.train.out_dir, "config.json"))
     print(cfg.summary())
-    print(f"[params] {json.dumps({k: round(v/1e6, 2) for k, v in model.parameter_report().items()})} (M)")
+    report = model.parameter_report()
+    counts = {k: round(v / 1e6, 2) for k, v in report.items() if isinstance(v, int)}
+    provenance = {k: v for k, v in report.items() if not isinstance(v, int)}
+    print(f"[params] {json.dumps(counts)} (M) | {json.dumps(provenance)}")
 
     collator = QuROCollator(
         cache, pad_id=model.pad_id,

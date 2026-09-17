@@ -63,14 +63,130 @@ class GeneratorQueryEncoder(nn.Module):
     The forward pass is short (a query is ~15 tokens against the decoder's ~70) and
     the non-parametric baseline already pays it, so the comparison stays fair; it
     does belong in the efficiency accounting.
+
+    ``representation`` decides whether that encoding is a *fixed function*:
+
+    ``shared_current``
+        The query is encoded through whatever the decoder adapter currently is.
+        Since the decoder's LoRA is being trained on the answer loss, the query
+        representation drifts across training.  ``no_grad`` stops gradient, not
+        drift.  This is the historical behaviour and every published run used it.
+    ``fixed_adapter``
+        A frozen copy of the adapter is taken at construction and activated for
+        the query forward only.  The query representation is then constant, so a
+        gain can be attributed to the readout rather than to the query space and
+        the decoder co-adapting.
     """
 
-    def __init__(self, lm, pooling: str = "last"):
+    def __init__(self, lm, pooling: str = "last",
+                 representation: str = "shared_current",
+                 adapter_name: str = "decoder_adapter"):
         super().__init__()
         self._lm = [lm]                      # hidden from state_dict; frozen
         self.pooling = pooling
+        self.representation = representation
+        self.decoder_adapter = adapter_name
+        self.query_adapter = None
         self.out_dim = int(lm.config.hidden_size)
         self.last_pooled = None              # set by forward(), read by the readout
+        self.query_adapter_hash = None
+        if representation == "fixed_adapter":
+            self.query_adapter = self._freeze_adapter_copy(lm, adapter_name)
+            # The frozen copy is taken from the *published* adapter, before any
+            # training, so it is reproducible from the checkpoint path alone and
+            # does not need to be stored.  But "reproducible" has to be checkable:
+            # construct the encoder after loading trained weights and the copy
+            # would silently be of the trained adapter instead.  The hash goes
+            # into the run record so that mistake is visible afterwards.
+            self.query_adapter_hash = self.adapter_hash(lm, self.query_adapter)
+
+    @staticmethod
+    def adapter_hash(lm, adapter_name: str) -> str:
+        import hashlib
+
+        digest = hashlib.sha1()
+        for name, parameter in sorted(lm.named_parameters()):
+            if f".{adapter_name}." in name:
+                digest.update(name.encode("utf-8"))
+                digest.update(parameter.detach().float().cpu().numpy().tobytes())
+        return digest.hexdigest()[:16]
+
+    @staticmethod
+    def _active_adapters(lm) -> list:
+        """PEFT exposes this as a property, and older versions as a scalar."""
+        value = getattr(lm, "active_adapters", None)
+        if value is None:
+            value = getattr(lm, "active_adapter", None)
+        if value is None:
+            return []
+        return list(value) if isinstance(value, (list, tuple)) else [value]
+
+    @staticmethod
+    def _grad_snapshot(lm) -> dict:
+        """Which parameters are trainable right now.
+
+        ``set_adapter`` documents that it sets the target adapter to
+        ``requires_grad=True``.  Switching adapters for a query forward would
+        therefore quietly hand the optimiser a different trainable set -- and
+        since the optimiser holds the Parameter objects, the damage shows up as
+        the decoder silently not training rather than as an error.  Snapshot and
+        restore instead of trusting the side effect.
+        """
+        return {name: p.requires_grad for name, p in lm.named_parameters()}
+
+    @staticmethod
+    def _restore_grads(lm, snapshot: dict) -> None:
+        for name, parameter in lm.named_parameters():
+            want = snapshot.get(name)
+            if want is not None and parameter.requires_grad != want:
+                parameter.requires_grad_(want)
+
+    @staticmethod
+    def _freeze_adapter_copy(lm, adapter_name: str) -> str:
+        """Duplicate ``adapter_name`` under a new name and freeze the copy.
+
+        Copying the adapter rather than the whole 7B keeps the backbone shared;
+        only the LoRA deltas are duplicated, which is a few hundred MB at most.
+        """
+        import copy as _copy
+
+        configs = getattr(lm, "peft_config", None)
+        if not configs or adapter_name not in configs:
+            raise ValueError(
+                f"cannot freeze a copy of adapter {adapter_name!r}: the generator "
+                f"exposes {sorted(configs or [])}")
+        frozen = "quro_query_adapter"
+        if frozen in configs:
+            raise ValueError(f"adapter {frozen!r} already exists; refusing to overwrite")
+        before = GeneratorQueryEncoder._grad_snapshot(lm)
+        lm.add_adapter(frozen, _copy.deepcopy(configs[adapter_name]))
+        # add_adapter creates a *fresh* adapter, so the weights have to be copied
+        # across explicitly -- otherwise the query would be encoded through a
+        # randomly initialised LoRA rather than through PISCO's trained one.
+        source = dict(lm.named_parameters())
+        copied = 0
+        with torch.no_grad():
+            for name, parameter in lm.named_parameters():
+                if f".{frozen}." not in name:
+                    continue
+                origin = name.replace(f".{frozen}.", f".{adapter_name}.")
+                if origin not in source:
+                    raise ValueError(f"no counterpart for {name} in {adapter_name}")
+                parameter.copy_(source[origin])
+                parameter.requires_grad_(False)
+                copied += 1
+        if copied == 0:
+            raise RuntimeError(f"adapter {frozen!r} has no parameters to freeze")
+        # add_adapter leaves the new adapter active; put the decoder's back, then
+        # undo the requires_grad churn both calls caused.  The frozen copy is not
+        # in the snapshot (it did not exist yet), so it stays False.
+        lm.set_adapter(adapter_name)
+        GeneratorQueryEncoder._restore_grads(lm, before)
+        trainable = sum(1 for n, p in lm.named_parameters()
+                        if p.requires_grad and adapter_name in n)
+        print(f"[query] fixed_adapter: froze {copied} tensors copied from "
+              f"{adapter_name}; {trainable} decoder tensors remain trainable")
+        return frozen
 
     def forward(self, ids, mask=None):
         if mask is None:
@@ -82,11 +198,22 @@ class GeneratorQueryEncoder(nn.Module):
         # irreproducible, so force eval mode here and restore it afterwards.
         was_training = lm.training
         lm.eval()
+        # Whatever this forward switches must be put back exactly, or the next
+        # decoder forward silently runs on the wrong adapter and the answer loss
+        # trains nothing.  Read the active set rather than assuming it.
+        switching = self.query_adapter is not None
+        previous = self._active_adapters(lm) if switching else []
+        grads = self._grad_snapshot(lm) if switching else None
         try:
+            if switching:
+                lm.set_adapter(self.query_adapter)
             with torch.no_grad():
                 hidden, pooled = encode_query_in_generator_space(
                     lm, ids, mask, self.pooling)
         finally:
+            if switching:
+                lm.set_adapter(previous[0] if previous else self.decoder_adapter)
+                self._restore_grads(lm, grads)
             lm.train(was_training)
         self.last_pooled = pooled
         return hidden
@@ -205,13 +332,21 @@ class QuROModel(nn.Module):
     def parameter_report(self) -> dict:
         def count(module):
             return sum(p.numel() for p in module.parameters() if p.requires_grad)
-        return {
+        report = {
             "readout": count(self.readout),
             "budget_selector": count(self.budget_selector),
             "query_encoder": count(self.query_encoder),
             "generator_lora": sum(p.numel() for p in self.lm.parameters() if p.requires_grad),
             "total": self.num_trainable(),
         }
+        # The query path shares the decoder's weights, so "how many parameters"
+        # does not describe it; which representation it uses does.
+        report["query_representation"] = getattr(
+            self.query_encoder, "representation", "n/a")
+        digest = getattr(self.query_encoder, "query_adapter_hash", None)
+        if digest is not None:
+            report["query_adapter_hash"] = digest
+        return report
 
     # -- query ----------------------------------------------------------
     def encode_query(self, query_ids, query_mask):
@@ -432,9 +567,13 @@ def build_model(cfg, cache_hidden: Optional[int] = None):
 
 
 def build_query_encoder(cfg, stack):
-    if cfg.query_encoder.kind == "generator":
-        return GeneratorQueryEncoder(stack.lm, cfg.query_encoder.pooling)
     """Frozen token-level query encoder; its hidden states are the readout's Q side."""
+    if cfg.query_encoder.kind == "generator":
+        from .generator import detect_adapter_name
+        return GeneratorQueryEncoder(
+            stack.lm, cfg.query_encoder.pooling,
+            representation=cfg.query_encoder.representation,
+            adapter_name=detect_adapter_name(stack.lm))
     if cfg.query_encoder.kind == "hf":
         from .hf_encoder import HFTokenEncoder
         return HFTokenEncoder(cfg.query_encoder)

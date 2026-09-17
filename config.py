@@ -139,6 +139,23 @@ class QueryEncoderConfig:
     pooling: str = "mean"                       # "mean" | "last" | "weighted"
     dtype: str = "bfloat16"
     trust_remote_code: bool = False
+    # ``freeze`` only means "no gradient flows back through the query path".  It
+    # does NOT mean the query representation is constant: with kind="generator"
+    # the encoder and the decoder are the same object, so the decoder's LoRA
+    # updates change what the query encodes into.  The three states are distinct
+    # and must not share one boolean (HANDOFF.md §4 W3):
+    #
+    #   "shared_current"  query uses whatever the decoder adapter currently is.
+    #                     Historical behaviour; the representation drifts during
+    #                     training, which is a design choice, not a bug -- but it
+    #                     is not what "frozen query encoder" describes.
+    #   "fixed_adapter"   query uses a frozen copy of the adapter taken at init;
+    #                     the decoder trains its own.  The query representation is
+    #                     then genuinely a fixed function.
+    #
+    # Neither is assumed better.  fixed_adapter removes a confound; whether it
+    # helps accuracy is an experiment.
+    representation: str = "shared_current"
     freeze: bool = True
     layer_index: int = -1
     add_learned_pos: bool = False               # HF backbones already carry RoPE
@@ -156,6 +173,8 @@ class QueryEncoderConfig:
             raise ValueError(f"unknown query encoder kind: {self.kind}")
         if self.pooling not in {"last", "mean", "weighted"}:
             raise ValueError(f"unknown query pooling: {self.pooling}")
+        if self.representation not in {"shared_current", "fixed_adapter"}:
+            raise ValueError(f"unknown query representation: {self.representation}")
         if self.kind == "hf" and not self.name_or_path:
             self.name_or_path = paths.ENCODER_PATH
 
