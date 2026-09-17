@@ -14,7 +14,7 @@ QuRO = **离线 query 无关压缩（复用冻结 PISCO/COCOM）+ 在线 query �
 
 1. **可学习读出确实赢 0 参数的余弦规则**——但只在低预算区间。HotpotQA、B=8：+6.15（p=5.5e-10）；B=16：+2.75；**B=32：−0.45（n.s.，S 反超）**。
 2. **PISCO 原方法 P 仍领先 7.70 分**（46.80 vs 54.50），而 prefill 只省 1.53×。这是当前最大的未解决问题。
-3. **预算不是瓶颈。**B 翻 4 倍只多榨出 2.4 分证据值。剩下的解释只有"输出是合成而非选择"和"训练信号不足"两个，下一步就是把它们分开。
+3. **单纯加预算追不回差距。**B 翻 4 倍只多榨出 2.4 分证据值。注意措辞：这不等于"容量已够"——更大的 B 可能需要更好的槽位分工或训练（见复审 §3.1）。分支干预已排除"输出是自由分支合成的"这一解释：`pool_only ≈ full`。
 
 数字与检验见 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)，原始数据见 [`results/arm_matrix.json`](../results/arm_matrix.json)。
 
@@ -42,7 +42,7 @@ QuRO = **离线 query 无关压缩（复用冻结 PISCO/COCOM）+ 在线 query �
 
 ## 3. 代码契约：已修的坑
 
-这几条原本是 `warning_and_target` 的 P0，现已实现并有契约测试覆盖（`python tests/test_shapes.py`，66 项）。**留在这里是因为它们描述了当前代码的语义，不是历史记录。**
+这几条原本是 `warning_and_target` 的 P0，现已全部实现并有契约测试覆盖（`python tests/test_shapes.py`，76 项）。**留在这里是因为它们描述了当前代码的语义，不是历史记录。**
 
 ### W1 ✅ 臂的四格定义
 
@@ -93,6 +93,37 @@ query 有**两条独立通路**进 readout：余弦先验（`cosine_bias()` 给�
 
 `--budget N` 必须显式传：只改 `budget_buckets` 会被 `max_budget` 过滤掉。
 
+### W3 ✅ query 表示策略（2026-09-17 已实现）
+
+`GeneratorQueryEncoder` 与 decoder 共用同一个 `lm`，`no_grad` 挡得住梯度、挡不住漂移——decoder 的 LoRA 一更新，query 编码出来的东西就变了。**此前每一次运行都带着这个混淆。**
+
+`query_encoder.representation` 现在把两种状态分开命名，不再和 `freeze` 挤在一个布尔值里：
+
+| 取值 | 含义 |
+|---|---|
+| `shared_current` | query 走当前的 decoder adapter。历史行为，**仍是默认**，老运行照常复现 |
+| `fixed_adapter` | 构造时复制一份已发布 adapter 并冻结，query 前向临时切过去 |
+
+CLI：`--query_representation {shared_current,fixed_adapter}`。
+
+**哪个更好是实验问题，不预设。**`fixed_adapter` 去掉的是一个混淆，不是保证涨点。
+
+契约测试（CPU stub）量化了这个混淆：decoder 训 5 步后，`fixed_adapter` 的 query 表示变化 **0.00e+00**，`shared_current` 变化 **7.11e-01**。
+
+实现上三处必须注意：
+
+- **`set_adapter` 会把目标 adapter 的 `requires_grad` 设成 True**（PEFT 文档明说）。切换前后都做 `requires_grad` 快照恢复，否则 optimizer 拿到的可训集合会变——而它持有的是 Parameter 对象，症状是 **decoder 静默不训练**，不报错。
+- **`peft.PeftModel` 与 transformers 的 `PeftAdapterMixin` 接口不一致**：`add_adapter` 参数顺序相反，`active_adapters` 一个是属性一个是方法。PISCO 的 decoder 是后者。代码按实际签名分派。
+- **冻结副本不进 checkpoint**（那是 PISCO 原始权重的副本），但**必须在加载训练权重之前构造**，否则复制到的是训练过的 adapter。`query_adapter_hash` 写进 `result.json`，这个错误事后可见。
+
+### 训练配方（2026-09-17 新增）
+
+| 开关 | 作用 |
+|---|---|
+| `--decoder_lr` | readout 从零开始、decoder LoRA 从 PISCO 热启动，此前共用一个学习率。按**模块身份**分组并断言划分，同一张量落进两组会被 AdamW 走两次且不报错 |
+| `--eval_every` / `--eval_every_samples` | 训练中在固定小 dev 片上验证。此前只在最后一步打分，所以"1500 步见顶后过拟合"和"根本没到"无法区分 |
+| `--select_metric` | 决定 `checkpoint_best.pt` 的指标，**运行前固定**，不能看完曲线再挑。最终评测仍打 `checkpoint_last`，所以 best 不会悄悄变成头条数字 |
+
 ### 其他已修
 
 - **`cosine_bias` 的 NaN**：有效 latent 少于 budget 时 `topk` 取到 −inf，整行 attention 变 −inf，softmax 出 NaN，反传毒化全部权重。B=32 上 C1 曾因此全程训废。**前向输出始终有限、只有梯度是 NaN**——"形状对、无 NaN"的检查抓不到它。
@@ -103,23 +134,7 @@ query 有**两条独立通路**进 readout：余弦先验（`cosine_bias()` 给�
 
 ## 4. 代码契约：未修的坑
 
-### W3 ❌ query encoder 与 decoder LoRA 共享（剩下唯一的 P0）
-
-`GeneratorQueryEncoder` 持有与 decoder **同一个** `lm` 对象。query 前向用 `no_grad`/eval，但 **decoder LoRA 在答案损失下更新，所以后续的 query 表示也会变**。
-
-这不是自动成立的 bug，而是**与"固定 query encoder"这个描述不一致的设计选择**。三个状态不要共用一个 freeze 布尔值：
-
-| 状态 | 准确定义 |
-|---|---|
-| 无 query 路径反传 | query 前向 no_grad，但共享权重可能被其他损失更新（**当前行为**） |
-| 固定 query 表示函数 | query 使用的 backbone、adapter 及一切影响输出的参数均不更新 |
-| 固定离线文档编码器 | 文档缓存对应的 encoder 版本固定；与上述两者都不是一回事 |
-
-**建议**：增加显式 query 表示策略。`fixed_adapter`（共享冻结 backbone，query 用单独的冻结初始 adapter 副本，decoder 用可训练副本）与 `shared_current`（当前行为，作对照）。
-
-验收：固定 query 下训若干 decoder 步后 `fixed_adapter` 的表示在容差内不变；冻结参数 hash 不变而 decoder adapter 确有变化；checkpoint 存取后表示可复现。注意 adapter 切换可能改 `requires_grad`，切换前后可训集合与 optimizer 参数身份必须不变；query 前向后必须恢复 decoder adapter 与 train/eval 状态。
-
-**影响**：目前所有运行都是 `shared_current`（与历史一致），但各臂可比性存疑，精度增益究竟来自 readout 还是 decoder/query 表示共同适配无法区分。
+剩下的不是代码 bug，是**尚未建立的度量**。
 
 ### 成本计量仍未建立
 
@@ -150,14 +165,21 @@ query 有**两条独立通路**进 readout：余弦先验（`cosine_bias()` 给�
 
 完整版见 [`ARM_MATRIX_RESULTS.md` §10](ARM_MATRIX_RESULTS.md)。摘要：
 
-| # | 实验 | 决定什么 |
+按 [`TRAINING_STRATEGY_REVIEW_AND_PLAN.md` §8](TRAINING_STRATEGY_REVIEW_AND_PLAN.md) 的矩阵推进，**工作点定在 B=8**——那是可学习读出相对余弦规则优势最大的点（+6.15，p=5.5e-10），也是每 token 证据效率最高的点（2.56）。B=16/32 更接近 P，但那里 C1≈S，方法没有可主张的增量。
+
+| # | 实验 | 状态 |
 |---|---|---|
-| **1** | **输出分支干预**（`bs32_C1` 的 checkpoint 跑 full/pool_only/delta_only） | 区分"合成 vs 选择"，**决定新损失加在哪**。纯推理，几分钟。 |
-| **2** | **KL 蒸馏 P**：`loss = CE + λ·KL(P‖C)` | 直接瞄准缺失的 7.70 分。P 已训好、读同一批文档、同一冻结 Mistral。建议离线预存 teacher 的 top-k logits。 |
-| **3** | **gold 注意力监督** | `gold_ranks` 是免费标注，目前一个字没用。**前提是实验 1 判定瓶颈在训练信号。** |
-| 4 | gold 覆盖诊断 | 把"余弦漏第二跳"从符合预测升级成直接观测。 |
-| 5 | 多 seed | 解除单 seed 限定，特别是 B=32 上 `C1−S` 的 −0.45。 |
-| 6 | W3 | 剩下唯一的 P0。 |
+| — | 输出分支干预 | ✅ 已跑。`pool_only ≈ full`（B=8 −0.65 / B=32 +0.45），**注意力池化撑起全部效果，Δ 可忽略**。所以注意力是因果路径，针对它的监督不会打空 |
+| — | W3 query 表示策略 | ✅ 已实现 |
+| **R0** | `fixed_adapter` + 原 CE 配方，B=8 | 去掉 query 漂移混淆后的新基线 |
+| **R1** | R0 + 分组学习率 | 是否存在优化失衡 |
+| **R2** | R1 + KL 蒸馏 P | 全缓存教师是否有效。建议离线预存 teacher 分布，**注意 top-k 不能直接重归一化**（见复审 §6.4） |
+| **R3** | R1 + gold 覆盖监督 | `supporting_sentences` 已在数据里，25× 于答案的监督密度 |
+| R4 | R1 + KL + coverage | R2/R3 至少一项有效再做 |
+
+**必须配套的对照**：S+KL（教师对 S 的 decoder 一样有用，最终要比 C+KL 与 S+KL）、D0 下的 A0、若 coverage 有效则补同标注的简单选择器基线。
+
+**尚未做的诊断**：均匀注意力对照（把 α 换成均匀，才是真正的"平均池化"基线）、gold 覆盖诊断、多 seed。
 
 **对比学习排在 KL 之后**：它要先定义正负样本，而实验 2、3 的靶子明确得多。
 
