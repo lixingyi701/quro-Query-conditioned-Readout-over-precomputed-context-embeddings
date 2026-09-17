@@ -79,8 +79,15 @@ def build_args():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
+    ap.add_argument("--decoder_lr", type=float, default=None,
+                    help="separate LR for the decoder LoRA; defaults to --lr")
     ap.add_argument("--grad_accum", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--eval_every", type=int, default=None,
+                    help="validate every N steps on a small dev slice; 0 disables")
+    ap.add_argument("--eval_every_samples", type=int, default=None)
+    ap.add_argument("--select_metric", choices=["em", "substring", "f1"], default=None,
+                    help="which metric picks checkpoint_best.pt; fix it before the run")
     ap.add_argument("--device", default=None)
     ap.add_argument("--resume_from", default=None)
 
@@ -159,6 +166,8 @@ def apply_overrides(cfg, args):
     simple = [
         ("steps", cfg.train), ("batch_size", cfg.train), ("lr", cfg.train),
         ("grad_accum", cfg.train), ("seed", cfg.train), ("device", cfg.train),
+        ("decoder_lr", cfg.train), ("eval_every", cfg.train),
+        ("eval_every_samples", cfg.train), ("select_metric", cfg.train),
         ("out_dir", cfg.train), ("resume_from", cfg.train),
         ("eval_max_samples", cfg.train), ("num_workers", cfg.train),
         ("d_readout", cfg.readout), ("cache_dir", cfg.data),
@@ -426,7 +435,23 @@ def main():
     params = model.trainable_parameters()
     if not params:
         raise RuntimeError("nothing is trainable; check readout kind and generator_lora_init")
-    optimizer = torch.optim.AdamW(params, lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
+    # Group by module, not by name: the decoder LoRA starts from PISCO's trained
+    # weights while the readout starts from scratch, so one rate for both is a
+    # choice rather than a default.  Identity comparison, because the same tensor
+    # must not land in two groups -- AdamW would then step it twice.
+    decoder_params = [p for p in model.lm.parameters() if p.requires_grad]
+    decoder_ids = {id(p) for p in decoder_params}
+    readout_params = [p for p in params if id(p) not in decoder_ids]
+    decoder_lr = cfg.train.lr if cfg.train.decoder_lr is None else cfg.train.decoder_lr
+    groups = [{"params": readout_params, "lr": cfg.train.lr, "name": "readout"}]
+    if decoder_params:
+        groups.append({"params": decoder_params, "lr": decoder_lr, "name": "decoder_lora"})
+    if sum(len(g["params"]) for g in groups) != len(params):
+        raise RuntimeError("parameter groups do not partition the trainable set")
+    print(f"[optim] readout lr={cfg.train.lr} ({len(readout_params)} tensors) | "
+          f"decoder lr={decoder_lr} ({len(decoder_params)} tensors)")
+    optimizer = torch.optim.AdamW(groups, lr=cfg.train.lr,
+                                  weight_decay=cfg.train.weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lr_lambda_factory(cfg.train.steps, cfg.train.warmup_ratio))
     start_step = 0
@@ -434,6 +459,27 @@ def main():
         _, _, saved = model.load(cfg.train.resume_from, optimizer=optimizer, scheduler=scheduler)
         start_step = int(saved or 0)
 
+    # Interval validation on a small, fixed dev slice.  It exists to answer
+    # "was 3000 steps too few, or is the capacity not there" -- a question the
+    # final-step-only protocol cannot answer, because a run that peaked at 1500
+    # and then overfitted looks identical to one that never got there.  The slice
+    # is small and fixed: it ranks checkpoints, it is not a reportable number, and
+    # the full dev evaluation at the end is unchanged.
+    validation = None
+    if cfg.train.eval_every > 0:
+        clean = [name for name in eval_loaders if "/" not in name]
+        if not clean:
+            raise RuntimeError("eval_every needs an eval split without a control suffix")
+        name = clean[0]
+        small = QuRODataset(cfg.data.resolved_eval_files()[name], stack.tokenizer, cfg.data,
+                            query_tokenizer=stack.query_tokenizer,
+                            limit=cfg.train.eval_every_samples, corpus=corpus)
+        validation = (name, DataLoader(small, batch_size=cfg.train.eval_batch_size,
+                                       shuffle=False, collate_fn=collator))
+        print(f"[val] every {cfg.train.eval_every} steps on {len(small)} rows of "
+              f"{name}, selecting on {cfg.train.select_metric}")
+
+    best = {"metric": float("-inf"), "step": None}
     iterator = cycle(train_loader)
     model.train()
     rng = random.Random(cfg.train.seed)
@@ -472,8 +518,42 @@ def main():
                 log.write(json.dumps(record) + "\n")
                 log.flush()
 
+            done = step + 1
+            if validation is not None and (done % cfg.train.eval_every == 0
+                                           or done == cfg.train.steps):
+                name, loader = validation
+                aggregate, _ = evaluate(model, loader, device,
+                                        cfg.train.gen_max_new_tokens,
+                                        cfg.readout.max_budget)
+                # evaluate() leaves the model in eval mode, which would silently
+                # disable LoRA dropout for the rest of training.
+                model.train()
+                score = float(aggregate[cfg.train.select_metric])
+                record = {"step": done, "split": name, "val_budget": cfg.readout.max_budget,
+                          **{k: round(float(aggregate[k]), 4)
+                             for k in ("em", "substring", "f1")},
+                          "seconds": round(time.time() - started, 1)}
+                print(f"[val] {record}", flush=True)
+                log.write(json.dumps({"validation": record}) + "\n")
+                log.flush()
+                if score > best["metric"]:
+                    best = {"metric": score, "step": done,
+                            "metrics": {k: float(aggregate[k])
+                                        for k in ("em", "substring", "f1")}}
+                    model.save(os.path.join(cfg.train.out_dir, "checkpoint_best.pt"),
+                               step=done)
+
     model.save(os.path.join(cfg.train.out_dir, "checkpoint_last.pt"),
                optimizer=optimizer, scheduler=scheduler, step=cfg.train.steps)
+    if best["step"] is not None:
+        # Reported, never silently substituted: the final evaluation below still
+        # scores checkpoint_last, so "best" cannot be read as the headline number
+        # unless a run explicitly asks for it.
+        print(f"[val] best {cfg.train.select_metric}={best['metric']:.4f} "
+              f"at step {best['step']} (checkpoint_best.pt)")
+        with open(os.path.join(cfg.train.out_dir, "best_checkpoint.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(best, f, indent=2)
     run_evaluations(model, eval_loaders, device, cfg, args, cache)
 
 

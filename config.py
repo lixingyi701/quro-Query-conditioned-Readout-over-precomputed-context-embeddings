@@ -260,10 +260,26 @@ class TrainConfig:
     steps: int = 3000
     batch_size: int = 8
     lr: float = 1e-4
+    # The readout starts from scratch and the decoder LoRA starts from PISCO's
+    # trained weights, but they have shared one learning rate.  A separate rate
+    # for the decoder lets the readout move without dragging a warm-started
+    # adapter at the same speed.  None = use ``lr``, i.e. today's behaviour.
+    decoder_lr: Optional[float] = None
     weight_decay: float = 0.01
     warmup_ratio: float = 0.05
     grad_clip: float = 1.0
     log_every: int = 20
+    # Validate during training instead of only scoring the final step.  Without
+    # this, a run that peaked at step 1500 and then overfitted is indistinguishable
+    # from one that never got there, and "3000 steps was not enough" cannot be
+    # told apart from "the capacity is not there".  0 disables.
+    eval_every: int = 0
+    # How many dev rows the interval validation uses.  Small on purpose: it runs
+    # many times and only has to rank checkpoints, not produce a reportable number.
+    eval_every_samples: int = 500
+    # Which metric picks the best checkpoint.  Fixed before the run, so it cannot
+    # be chosen after seeing the curves.
+    select_metric: str = "em"
     seed: int = 42
     device: str = "auto"
     out_dir: str = os.path.join(paths.RUNS_DIR, "debug")

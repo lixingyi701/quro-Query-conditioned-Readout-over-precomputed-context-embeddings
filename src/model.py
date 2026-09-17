@@ -113,13 +113,24 @@ class GeneratorQueryEncoder(nn.Module):
 
     @staticmethod
     def _active_adapters(lm) -> list:
-        """PEFT exposes this as a property, and older versions as a scalar."""
-        value = getattr(lm, "active_adapters", None)
-        if value is None:
-            value = getattr(lm, "active_adapter", None)
-        if value is None:
-            return []
-        return list(value) if isinstance(value, (list, tuple)) else [value]
+        """Name(s) of the currently active adapter, across three spellings.
+
+        ``peft.PeftModel`` exposes ``active_adapters`` as a *property* returning a
+        list; transformers' ``PeftAdapterMixin`` exposes it as a *method*; older
+        versions only have the scalar ``active_adapter``.  Taking the attribute
+        without calling it yields a bound method, which then gets handed to
+        ``set_adapter`` as if it were a name.
+        """
+        for attribute in ("active_adapters", "active_adapter"):
+            value = getattr(lm, attribute, None)
+            if value is None:
+                continue
+            if callable(value):
+                value = value()
+            if isinstance(value, (list, tuple)):
+                return [str(x) for x in value]
+            return [str(value)]
+        return []
 
     @staticmethod
     def _grad_snapshot(lm) -> dict:
@@ -159,7 +170,20 @@ class GeneratorQueryEncoder(nn.Module):
         if frozen in configs:
             raise ValueError(f"adapter {frozen!r} already exists; refusing to overwrite")
         before = GeneratorQueryEncoder._grad_snapshot(lm)
-        lm.add_adapter(frozen, _copy.deepcopy(configs[adapter_name]))
+        # Two libraries expose add_adapter with the arguments in opposite orders:
+        #   peft.PeftModel            (adapter_name, peft_config)
+        #   transformers PeftAdapterMixin (adapter_config, adapter_name)
+        # PISCO's decoder is a transformers model with the mixin, not a PeftModel,
+        # so hardcoding either order works in exactly one of the two places.
+        # Dispatch on the real signature rather than on the class.
+        import inspect
+
+        parameters = list(inspect.signature(lm.add_adapter).parameters)
+        config = _copy.deepcopy(configs[adapter_name])
+        if parameters and parameters[0] in ("adapter_config", "peft_config"):
+            lm.add_adapter(config, frozen)
+        else:
+            lm.add_adapter(frozen, config)
         # add_adapter creates a *fresh* adapter, so the weights have to be copied
         # across explicitly -- otherwise the query would be encoded through a
         # randomly initialised LoRA rather than through PISCO's trained one.
