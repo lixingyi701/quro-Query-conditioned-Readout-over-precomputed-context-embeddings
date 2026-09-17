@@ -593,6 +593,81 @@ def test_query_adapter_checkpoint():
         check("loading a shared_current checkpoint into fixed_adapter is rejected", True)
 
 
+def test_query_slot_prompts(tokenizer, n_mem_tokens):
+    """D4/D5 reserve separate positions for the compressed question.
+
+    Both groups reuse the ``<MEM*>`` vocabulary -- adding a token would resize the
+    embedding table and stop the PISCO comparison being like for like -- so they
+    are told apart by order alone.  Writing the question into the evidence
+    positions would produce a perfectly valid-looking prompt carrying the wrong
+    content, which is why the counts are checked rather than assumed.
+    """
+    from src.prompt import PiscoPromptBuilder, assemble_inputs
+
+    budget, query_tokens = 8, 6
+    for mode in ("D4", "D5"):
+        builder = PiscoPromptBuilder(tokenizer, n_mem_tokens, mode,
+                                     query_tokens=query_tokens)
+        prompt = builder.build("who directed the film", budget)
+        check(f"{mode} reserves {budget} evidence slots",
+              len(prompt.slot_positions) == budget, str(len(prompt.slot_positions)))
+        check(f"{mode} reserves {query_tokens} question slots",
+              len(prompt.query_slot_positions) == query_tokens,
+              str(len(prompt.query_slot_positions)))
+        check(f"{mode}: the two groups do not overlap",
+              not (set(prompt.slot_positions) & set(prompt.query_slot_positions)))
+        check(f"{mode}: evidence comes before the question",
+              max(prompt.slot_positions) < min(prompt.query_slot_positions))
+
+    # Length claims have to be tokenizer-independent.  "D4 is shorter than D0"
+    # only holds when the question tokenizes to more than query_tokens, which is
+    # true for Mistral (~23 tokens) and false for the word-level toy tokenizer --
+    # so assert the structural identity instead: D4 is D1 with the question
+    # replaced by exactly query_tokens embeddings.
+    builders = {m: PiscoPromptBuilder(tokenizer, n_mem_tokens, m,
+                                      query_tokens=query_tokens)
+                for m in ("D0", "D1", "D4", "D5")}
+    lengths = {m: len(b.build("who directed the film", budget).input_ids)
+               for m, b in builders.items()}
+    # The slot string carries a <SEP> per block, so the question costs
+    # query_tokens + 1, not query_tokens.  Measure it rather than assume it.
+    slot_cost = len(tokenizer(builders["D4"].slot_string(query_tokens),
+                              add_special_tokens=False)["input_ids"])
+    check("D4 is D1 plus exactly the question's slot string",
+          lengths["D4"] == lengths["D1"] + slot_cost,
+          f"{lengths} slot_cost={slot_cost}")
+    check("the question's slots cost one separator beyond the slots themselves",
+          slot_cost == query_tokens + 1, str(slot_cost))
+    check("D5 drops the system prompt and scaffolding D4 keeps",
+          lengths["D5"] < lengths["D4"], str(lengths))
+    check("D5 carries only the slots plus BOS",
+          lengths["D5"] <= budget + query_tokens + 4, str(lengths["D5"]))
+
+    # The question embeddings must actually land in their own positions.
+    hidden = 16
+    embeddings = torch.nn.Embedding(max(len(tokenizer), 64), hidden)
+    prompt = builders["D4"].build("who directed the film", budget)
+    soft = torch.zeros(1, budget, hidden)
+    question = torch.arange(1, query_tokens + 1, dtype=torch.float32)[None, :, None]
+    question = question.expand(1, query_tokens, hidden).contiguous()
+    packed = assemble_inputs(embeddings, [prompt], soft,
+                             torch.ones(1, budget, dtype=torch.bool),
+                             query_tokens=question)
+    written = packed["inputs_embeds"][0, prompt.query_slot_positions, 0]
+    check("the compressed question is written to its own slots",
+          torch.allclose(written, torch.arange(1., query_tokens + 1.), atol=1e-5),
+          str(written.tolist()))
+    check("the evidence slots stay zero, not overwritten by the question",
+          float(packed["inputs_embeds"][0, prompt.slot_positions].abs().max()) == 0.0)
+
+    try:
+        assemble_inputs(embeddings, [prompt], soft,
+                        torch.ones(1, budget, dtype=torch.bool), query_tokens=None)
+        check("a missing compressed question is rejected", False)
+    except ValueError:
+        check("a missing compressed question is rejected", True)
+
+
 def test_distillation_loss():
     """The KL must behave like a divergence, and must not renormalise the top-k.
 
@@ -811,7 +886,10 @@ def main():
         test_cache(cache_dir, doc_ids, m, h)
 
         from src.toy import ToyTokenizer
-        test_prompt(ToyTokenizer.build_from_texts(["who designed the building and in which year"]), 8)
+        toy_tok = ToyTokenizer.build_from_texts(
+            ["who designed the building and in which year", "who directed the film"])
+        test_prompt(toy_tok, 8)
+        test_query_slot_prompts(toy_tok, 8)
 
         test_end_to_end(cache_dir, train_path, m, h)
 

@@ -136,8 +136,15 @@ def build_args():
     ap.add_argument("--without_document_source", action="store_true")
     ap.add_argument("--adaptive_budget", action="store_true")
 
+    # D4/D5 compress the question into embeddings instead of sending its text.
+    # D4 keeps PISCO's scaffolding; D5 keeps nothing but the two slot groups, so
+    # everything the decoder reads is a compressed vector.
     ap.add_argument("--decoder_input_mode",
-                    choices=["D0", "D1", "D2", "D3", "AG", "RG"], default=None)
+                    choices=["D0", "D1", "D2", "D3", "D4", "D5", "AG", "RG"],
+                    default=None)
+    ap.add_argument("--query_tokens", type=int, default=None,
+                    help="embeddings the question is compressed into for D4/D5; "
+                         "HotpotQA questions average ~23 tokens, so 6 is about 4x")
     ap.add_argument("--query_text_dropout", type=float, default=None)
     ap.add_argument("--generator_lora_init", choices=["pisco", "random", "frozen"], default=None)
     ap.add_argument("--generator_path", default=None,
@@ -179,6 +186,7 @@ def apply_overrides(cfg, args):
         ("steps", cfg.train), ("batch_size", cfg.train), ("lr", cfg.train),
         ("grad_accum", cfg.train), ("seed", cfg.train), ("device", cfg.train),
         ("decoder_lr", cfg.train), ("eval_every", cfg.train),
+        ("query_tokens", cfg.decoder),
         ("eval_every_samples", cfg.train), ("select_metric", cfg.train),
         ("out_dir", cfg.train), ("resume_from", cfg.train),
         ("eval_max_samples", cfg.train), ("num_workers", cfg.train),

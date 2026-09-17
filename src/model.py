@@ -26,7 +26,8 @@ import torch.nn as nn
 from .baselines import (PiscoDirectReadout, SimilarityTopBReadout,
                         encode_query_in_generator_space, pool_query_in_generator_space)
 from .distill import distillation_loss
-from .prompt import DECODER_INPUT_MODES, SLOTLESS_MODES, PiscoPromptBuilder, assemble_inputs
+from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
+                     PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
 
 
@@ -344,7 +345,8 @@ class QuROModel(nn.Module):
                 parameter.requires_grad_(False)
 
         self.prompt_builders = {
-            mode: PiscoPromptBuilder(tokenizer, self.n_mem_tokens, mode)
+            mode: PiscoPromptBuilder(tokenizer, self.n_mem_tokens, mode,
+                                     query_tokens=cfg.decoder.query_tokens)
             for mode in DECODER_INPUT_MODES
         }
         self.decoder_input_mode = cfg.decoder.input_mode
@@ -433,6 +435,46 @@ class QuROModel(nn.Module):
         if bad:
             raise ValueError(f"budgets {sorted(set(bad))} are outside buckets {sorted(allowed)}")
         return budgets, logits
+
+    def compress_query(self, batch, tokens: int):
+        """The question as ``tokens`` embeddings in the generator's own space.
+
+        Segment mean-pooling over the query encoder's hidden states, which are
+        already generator hidden states -- the same space the cached latents and
+        therefore the soft tokens live in, so they can be written straight into
+        prompt positions with no learned projection.
+
+        Parameter-free on purpose.  A learned compressor would confound "the
+        question survives compression" with "we added capacity"; if mean-pooling
+        to a quarter of the length costs nothing, that is the stronger result, and
+        if it costs a lot we know a learned one is worth trying.
+
+        Order is preserved by pooling contiguous segments rather than attending:
+        a question is not a bag of words, and "who directed X" and "X directed
+        who" would otherwise land on the same vectors.
+        """
+        hidden = self.encode_query(batch["query_gen_ids"], batch["query_gen_mask"])
+        mask = batch["query_gen_mask"][:, :hidden.size(1)].to(hidden.dtype)
+        rows, length, _ = hidden.shape
+        out = hidden.new_zeros(rows, tokens, hidden.size(-1))
+        lengths = mask.sum(1).clamp_min(1.0)
+        for row in range(rows):
+            n = int(lengths[row].item())
+            # Segment boundaries over the *real* tokens only; padding must not
+            # dilute a segment, and a short question must not leave empty ones.
+            edges = [round(i * n / tokens) for i in range(tokens + 1)]
+            for slot in range(tokens):
+                start, stop = edges[slot], max(edges[slot] + 1, edges[slot + 1])
+                stop = min(stop, n)
+                piece = hidden[row, start:stop]
+                out[row, slot] = piece.mean(0) if piece.size(0) else hidden[row, :n].mean(0)
+        return out
+
+    def _compressed_query(self, batch):
+        """Only computed when a mode actually reserves slots for it."""
+        if self.decoder_input_mode not in QUERY_SLOT_MODES:
+            return None
+        return self.compress_query(batch, self.cfg.decoder.query_tokens)
 
     def query_vector(self, batch):
         """Generator-space sentence vector, through the configured representation.
@@ -554,7 +596,8 @@ class QuROModel(nn.Module):
         packed = assemble_inputs(
             self.lm.get_input_embeddings(), prompts,
             result["soft_tokens"], result["soft_token_mask"],
-            target_ids=batch["target_ids"], pad_token_id=self.pad_id, pad_side="right")
+            target_ids=batch["target_ids"], pad_token_id=self.pad_id, pad_side="right",
+            query_tokens=self._compressed_query(batch))
         output = self.lm(**packed)
         if return_logits:
             rows, cols, order = self.answer_positions(packed["labels"])
@@ -649,7 +692,8 @@ class QuROModel(nn.Module):
             packed = assemble_inputs(
                 self.lm.get_input_embeddings(), prompts,
                 result["soft_tokens"], result["soft_token_mask"],
-                target_ids=None, pad_token_id=self.pad_id, pad_side="left")
+                target_ids=None, pad_token_id=self.pad_id, pad_side="left",
+                query_tokens=self._compressed_query(batch))
             ids = self.lm.generate(
                 inputs_embeds=packed["inputs_embeds"],
                 attention_mask=packed["attention_mask"],

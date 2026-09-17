@@ -18,7 +18,7 @@ loss cannot go down unless the readout genuinely conditions on the query.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 import torch
@@ -29,17 +29,27 @@ SYSTEM_PROMPT = (
 )
 
 #: D0 pisco-identical | D1 no question text | D2 question first | D3 slots only
+#: D4 question compressed into slots | D5 document and question slots, nothing else
 #: AG closed-book, no evidence at all | RG uncompressed document text
 #: AG and RG are the bounds of the main table: they carry no memory slots, so the
 #: readout is bypassed and the comparison is purely "what does the decoder see".
-DECODER_INPUT_MODES = ("D0", "D1", "D2", "D3", "AG", "RG")
+DECODER_INPUT_MODES = ("D0", "D1", "D2", "D3", "D4", "D5", "AG", "RG")
 SLOTLESS_MODES = ("AG", "RG")
+#: Modes where the question reaches the decoder as embeddings rather than text.
+#: The point is not the token count alone -- the system prompt is static and a
+#: serving stack caches its KV across every query, so it is close to free -- but
+#: the *per-query* prefill, which is the question plus the slots and nothing else.
+QUERY_SLOT_MODES = ("D4", "D5")
 
 
 @dataclass
 class BuiltPrompt:
     input_ids: List[int]
     slot_positions: List[int]
+    #: Positions holding the compressed question, empty outside D4/D5.  Kept
+    #: separate from slot_positions because the two are filled from different
+    #: tensors and confusing them would write evidence where the question goes.
+    query_slot_positions: List[int] = field(default_factory=list)
 
 
 class PiscoPromptBuilder:
@@ -47,7 +57,8 @@ class PiscoPromptBuilder:
 
     def __init__(self, tokenizer, n_mem_tokens: int, mode: str = "D0",
                  system_prompt: str = SYSTEM_PROMPT, max_doc_tokens: int = 128,
-                 max_prompt_tokens: int = 4096):
+                 max_prompt_tokens: int = 4096,
+                 query_tokens: int = 0):
         if mode not in DECODER_INPUT_MODES:
             raise ValueError(f"decoder_input_mode must be one of {DECODER_INPUT_MODES}, got {mode}")
         self.tok = tokenizer
@@ -75,6 +86,8 @@ class PiscoPromptBuilder:
         # different experiment.  PISCO truncates each document at 128 tokens.
         self.max_doc_tokens = int(max_doc_tokens)
         self.max_prompt_tokens = int(max_prompt_tokens)
+        #: How many embeddings the question is compressed into (D4/D5).
+        self.query_tokens = int(query_tokens)
 
     def slot_string(self, budget: int) -> str:
         """``budget`` slots laid out as PISCO's blocks of ``n_mem_tokens`` + ``<SEP>``.
@@ -108,6 +121,22 @@ class PiscoPromptBuilder:
         slots = self.slot_string(budget)
         if self.mode == "D3":
             return slots
+        if self.mode in QUERY_SLOT_MODES:
+            if self.query_tokens < 1:
+                raise ValueError(f"{self.mode} needs query_tokens >= 1")
+            # The question's slots reuse the <MEM*> vocabulary: adding a new
+            # special token would resize the embedding table and stop the
+            # comparison against PISCO from being like for like.  They are told
+            # apart by position instead -- the document slots are emitted first --
+            # and build() checks the counts rather than assuming them.
+            question = self.slot_string(self.query_tokens)
+            if self.mode == "D5":
+                # Nothing but evidence and question, both as embeddings.  The
+                # system prompt is static, so a serving stack caches its KV once
+                # and pays for it on no query; dropping it is a claim about the
+                # decoder needing no instructions, not an efficiency claim.
+                return slots + question
+            return self._chat(f"Background:\n{slots}\n\nQuestion:{question}")
         if self.mode == "D0":
             user = f"Background:\n{slots}\n\nQuestion:{query}"
         elif self.mode == "D1":
@@ -148,17 +177,23 @@ class PiscoPromptBuilder:
             raise ValueError(
                 f"RG prompt hit the {self.max_prompt_tokens}-token cap; the question "
                 "would be truncated away. Lower max_docs or max_doc_tokens.")
-        if self.mode == "D3":
+        if self.mode in ("D3", "D5"):
             bos = getattr(self.tok, "bos_token_id", None)
             input_ids = ([bos] if bos is not None else []) + input_ids
         if self.mode in SLOTLESS_MODES:
             return BuiltPrompt(input_ids, [])
         positions = [i for i, token in enumerate(input_ids) if token in self.mem_token_ids]
-        if len(positions) != budget:
+        wanted = budget + (self.query_tokens if self.mode in QUERY_SLOT_MODES else 0)
+        if len(positions) != wanted:
             raise ValueError(
-                f"prompt has {len(positions)} memory slots but budget is {budget}; "
-                "the prompt was probably truncated")
-        return BuiltPrompt(input_ids, positions)
+                f"prompt has {len(positions)} memory slots but expected {wanted} "
+                f"({budget} evidence"
+                + (f" + {self.query_tokens} question)" if self.mode in QUERY_SLOT_MODES
+                   else ")")
+                + "; the prompt was probably truncated")
+        # Document slots are rendered first, so the split is by order.  Anything
+        # that changed that order would trip the count check above.
+        return BuiltPrompt(input_ids, positions[:budget], positions[budget:])
 
 
 def assemble_inputs(
@@ -169,6 +204,7 @@ def assemble_inputs(
     target_ids: Optional[Sequence[Sequence[int]]] = None,
     pad_token_id: int = 0,
     pad_side: str = "right",
+    query_tokens: Optional[torch.Tensor] = None,
 ):
     """Embed prompts, write soft tokens into the memory slots, append targets.
 
@@ -190,6 +226,20 @@ def assemble_inputs(
                     f"row {i}: {valid.size(0)} soft tokens for "
                     f"{len(prompt.slot_positions)} slots")
             embeds[torch.tensor(prompt.slot_positions, device=device)] = valid
+        if prompt.query_slot_positions:
+            # Written after the evidence slots and into disjoint positions, so a
+            # mix-up would have to survive both this length check and the count
+            # check in build().
+            if query_tokens is None:
+                raise ValueError(
+                    f"row {i}: the prompt reserves {len(prompt.query_slot_positions)} "
+                    "slots for the compressed question but none were supplied")
+            question = query_tokens[i].to(dtype)
+            if question.size(0) != len(prompt.query_slot_positions):
+                raise ValueError(
+                    f"row {i}: {question.size(0)} compressed query tokens for "
+                    f"{len(prompt.query_slot_positions)} slots")
+            embeds[torch.tensor(prompt.query_slot_positions, device=device)] = question
         label = [-100] * embeds.size(0)
         if target_ids is not None and len(target_ids[i]):
             target = torch.tensor(list(target_ids[i]), device=device)

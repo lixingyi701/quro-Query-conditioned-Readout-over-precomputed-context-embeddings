@@ -222,11 +222,26 @@ class DecoderInputConfig:
     """
 
     input_mode: str = "D0"
+    # D4/D5: how many embeddings the question is compressed into.  Questions
+    # average ~23 tokens on HotpotQA, so 6 is roughly a 4x ratio -- matching what
+    # the documents already get, and the point of the design: if documents can be
+    # compressed, so can the question.
+    query_tokens: int = 6
     query_text_dropout: float = 0.0
 
     def __post_init__(self):
-        if self.input_mode not in {"D0", "D1", "D2", "D3"}:
-            raise ValueError(f"unknown decoder_input_mode: {self.input_mode}")
+        # Derived from the prompt builder rather than repeated.  A second copy of
+        # this list is how D4/D5 were accepted by the CLI and then rejected here,
+        # and how the --preset list hid pisco_hotpot before it.
+        from src.prompt import DECODER_INPUT_MODES
+
+        if self.input_mode not in DECODER_INPUT_MODES:
+            raise ValueError(
+                f"unknown decoder_input_mode: {self.input_mode}; "
+                f"expected one of {DECODER_INPUT_MODES}")
+        if self.input_mode in ("D4", "D5") and self.query_tokens < 1:
+            raise ValueError(f"{self.input_mode} compresses the question into "
+                             "query_tokens embeddings; it must be >= 1")
         if not 0.0 <= self.query_text_dropout <= 1.0:
             raise ValueError("query_text_dropout must be in [0,1]")
 
