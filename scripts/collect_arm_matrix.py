@@ -57,6 +57,27 @@ REGISTRY = [
     ("bs16S_S", "hotpotqa", "dev", "qdrop0/fixedB"),
     ("bs32S_S", "hotpotqa", "dev", "qdrop0/fixedB"),
     ("bs32_C0", "hotpotqa", "dev", "qdrop0/fixedB"),
+    # Training-recipe wave.  Same data and budget as the B sweep's B=8 point, but
+    # the query representation and the optimiser are the variables, so these are
+    # their own setting: bs8_C1 is shared_current + single LR on the code *before*
+    # the control-arm bypass was fixed, and bs8S_S is invalid because of it.
+    ("r0_C1", "hotpotqa", "dev", "fixedq/B8"),
+    ("r1_C1", "hotpotqa", "dev", "fixedq/B8/grouped_lr"),
+    ("r0S_S", "hotpotqa", "dev", "fixedq/B8"),
+    ("sfix_S", "hotpotqa", "dev", "sharedq/B8/bypass_fixed"),
+    # Distillation wave.  r2a is the matched no-teacher control; comparing a
+    # distilled arm against an earlier wave would confound the teacher with the
+    # bypass fix.
+    ("r2a_C1", "hotpotqa", "dev", "fixedq/B8"),
+    ("r2b_C1", "hotpotqa", "dev", "fixedq/B8/kd0.5"),
+    ("r2c_C1", "hotpotqa", "dev", "fixedq/B8/kd1.0"),
+    ("r2d_S", "hotpotqa", "dev", "fixedq/B8/kd0.5"),
+    # Question-compression wave.  These evaluate under D4/D5, so their metric keys
+    # differ from every other row and cannot be pooled by accident.
+    ("q4_C1", "hotpotqa", "dev", "fixedq/B8/D4"),
+    ("q4kd_C1", "hotpotqa", "dev", "fixedq/B8/D4/kd0.5"),
+    ("q5_C1", "hotpotqa", "dev", "fixedq/B8/D5"),
+    ("q5kd_C1", "hotpotqa", "dev", "fixedq/B8/D5/kd0.5"),
     # Historical TriviaQA runs.  These predate the arm taxonomy, and their "A" is
     # A1: the cosine prior was on.  They also used the mismatch-*query* control,
     # so they carry no evidence floor and their evidence use cannot be recovered.
@@ -88,11 +109,24 @@ PAIRED = [
     ("hotpotqa", "qdrop0/fixedB", "D0", "bs16_C1", "bs16S_S"),
     ("hotpotqa", "qdrop0/fixedB", "D0", "bs32_C1", "bs32S_S"),
     ("hotpotqa", "qdrop0/fixedB", "D0", "bs32_C1", "bs32_C0"),
+    # Training recipe: what fixed_adapter and the grouped LR are each worth.
+    ("hotpotqa", "fixedq/B8", "D0", "r0_C1", "bs8_C1"),
+    ("hotpotqa", "fixedq/B8", "D0", "r1_C1", "r0_C1"),
+    ("hotpotqa", "fixedq/B8", "D0", "sfix_S", "bs8S_S"),
+    ("hotpotqa", "fixedq/B8", "D0", "r0_C1", "r0S_S"),
+    # Distillation, and the control that decides whether it is a general gain.
+    ("hotpotqa", "fixedq/B8", "D0", "r2b_C1", "r2a_C1"),
+    ("hotpotqa", "fixedq/B8", "D0", "r2c_C1", "r2a_C1"),
+    ("hotpotqa", "fixedq/B8", "D0", "r2d_S", "r0S_S"),
+    ("hotpotqa", "fixedq/B8", "D0", "r2b_C1", "r2d_S"),
 ]
 
 # Runs whose budget is not 8; used to line up predictions files and to label the
 # curve.  Anything absent is B=8.
 BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0": 32}
+# Runs whose decoder reads something other than D0.  Recorded rather than derived
+# so a D4 run can never be pooled with a D0 one on a matching metric name.
+DECODER_MODES = {"q4_C1": "D4", "q4kd_C1": "D4", "q5_C1": "D5", "q5kd_C1": "D5"}
 
 
 def mcnemar(deltas):
@@ -108,6 +142,7 @@ def mcnemar(deltas):
 
 def load_predictions(runs, tag, split, mode):
     budget = BUDGETS.get(tag, 8)
+    mode = DECODER_MODES.get(tag, mode)
     name = f"predictions_{split.replace('/', '_')}_{mode}_B{budget}.json"
     path = os.path.join(runs, tag, name)
     if not os.path.exists(path):
@@ -125,6 +160,10 @@ def collect(runs):
         record = json.load(open(path, encoding="utf-8"))
         entry = {
             "dataset": dataset, "split": split, "setting": setting,
+            "decoder_input_mode": DECODER_MODES.get(tag, "D0"),
+            "kd_weight": record.get("kd_weight"),
+            "teacher_logits": record.get("teacher_logits"),
+            "query_representation": record.get("query_representation"),
             # arm_label() re-derives what the config implements; the historical
             # runs predate it and are labelled from their raw fields below.
             "arm": record.get("arm"),

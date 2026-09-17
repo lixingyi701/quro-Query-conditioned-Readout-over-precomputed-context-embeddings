@@ -2,7 +2,8 @@
 
 > **2026-09-17 训练方案复审：** 下一步实施前请读 [TRAINING_STRATEGY_REVIEW_AND_PLAN.md](TRAINING_STRATEGY_REVIEW_AND_PLAN.md)。它收窄了本文“预算已排除、只剩两个原因、分支干预可决定损失位置”的表述，并提出固定 query 表示、分组优化、CE/KL/证据覆盖的受控实验矩阵。下文历史分析保留；该新文档是待验证建议，不是已运行结果。
 
-新会话从这里开始。本文合并了原先的 HANDOFF 与 `warning_and_target.md`——后者的实施要求已有 W1/W2/W4/W5 完成，留着两份只会让人读到作废的结论。**结果不在本文，在 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)。**
+新会话从这里开始。本文合并了原先的 HANDOFF 与 `warning_and_target.md`——后者的实施要求已有 W1/W2/W4/W5 完成，留着两份只会让人读到作废的结论。**结果不在本文。**臂定义与预算曲线见 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)；
+训练配方、蒸馏与输入压缩见 [`TRAINING_RECIPE_RESULTS.md`](TRAINING_RECIPE_RESULTS.md)。
 
 ---
 
@@ -12,11 +13,14 @@ QuRO = **离线 query 无关压缩（复用冻结 PISCO/COCOM）+ 在线 query �
 
 截至目前，三件事已经定了：
 
-1. **可学习读出确实赢 0 参数的余弦规则**——但只在低预算区间。HotpotQA、B=8：+6.15（p=5.5e-10）；B=16：+2.75；**B=32：−0.45（n.s.，S 反超）**。
+1. **可学习读出确实赢 0 参数的余弦规则**——但只在低预算区间。HotpotQA B=8：**+5.60**（p=1.2e-08，同为 `fixed_adapter`）；B=16：+2.75；**B=32：−0.45（n.s.，S 反超）**。
+   > 曾公布的 +6.15 虚高约一分：S 的余弦先验此前在 train 模式下计算（dropout 生效）。见 [`TRAINING_RECIPE_RESULTS.md`](TRAINING_RECIPE_RESULTS.md) §2。**`bs8S_S` 及所有 A1 数字已作废。**
 2. **PISCO 原方法 P 仍领先 7.70 分**（46.80 vs 54.50），而 prefill 只省 1.53×。这是当前最大的未解决问题。
-3. **单纯加预算追不回差距。**B 翻 4 倍只多榨出 2.4 分证据值。注意措辞：这不等于"容量已够"——更大的 B 可能需要更好的槽位分工或训练（见复审 §3.1）。分支干预已排除"输出是自由分支合成的"这一解释：`pool_only ≈ full`。
+3. **KD 的收益只经过 readout。**λ=0.5 对 C1 是 +1.00 EM（n.s.）/ +1.85 substring（p=0.022），对 S 是**精确的零**（p=1.00）——所以它不是通用训练收益。
+4. **system prompt 可以整个删掉**（−0.05 EM，p=1.00），**问题压缩掉 10 分但证据利用反而上升**（地板 22.55→5.5，证据值 20.55→27.35）。
+5. **单纯加预算追不回差距。**B 翻 4 倍只多榨出 2.4 分证据值。注意措辞：这不等于"容量已够"——更大的 B 可能需要更好的槽位分工或训练（见复审 §3.1）。分支干预已排除"输出是自由分支合成的"这一解释：`pool_only ≈ full`。
 
-数字与检验见 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)，原始数据见 [`results/arm_matrix.json`](../results/arm_matrix.json)。
+数字与检验见上述两份结果文档，原始数据见 [`results/arm_matrix.json`](../results/arm_matrix.json)（37 次运行 + 24 组配对检验）。
 
 ---
 
@@ -42,7 +46,7 @@ QuRO = **离线 query 无关压缩（复用冻结 PISCO/COCOM）+ 在线 query �
 
 ## 3. 代码契约：已修的坑
 
-这几条原本是 `warning_and_target` 的 P0，现已全部实现并有契约测试覆盖（`python tests/test_shapes.py`，76 项）。**留在这里是因为它们描述了当前代码的语义，不是历史记录。**
+这几条原本是 `warning_and_target` 的 P0，现已全部实现并有契约测试覆盖（`python tests/test_shapes.py`，113 项）。**留在这里是因为它们描述了当前代码的语义，不是历史记录。**
 
 ### W1 ✅ 臂的四格定义
 
@@ -296,7 +300,8 @@ src/ scripts/ tests/   代码
 
 ### docs 索引
 
-- [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) — **当前结果**，25 次运行 + 16 组配对检验
+- [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) — 臂定义、四格分解、B 扫描
+- [`TRAINING_RECIPE_RESULTS.md`](TRAINING_RECIPE_RESULTS.md) — **最新**：训练配方、KL 蒸馏、问题压缩（37 次运行 + 24 组配对检验）
 - [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) — 实验设计
 - [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) — v0.2 分析，**其 A 臂结论已被 §3 W1 推翻**
 - [`QURO_RELATED_WORK.md`](QURO_RELATED_WORK.md) — 相关工作与切割

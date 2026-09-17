@@ -1,6 +1,6 @@
 {
-  "commit": "e795ff1ac2c9ce98213e3cb98564db54a03b23ea",
-  "generated": "2026-09-17T03:48:46+00:00",
+  "commit": "60307df9714b20d770f95ae285f6c1a5ccdc45b0",
+  "generated": "2026-09-17T12:33:13+00:00",
   "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
   "paired_tests": [
     {
@@ -354,6 +354,182 @@
         "p": 8.688112624011702e-19,
         "wins": 253
       }
+    },
+    {
+      "a": "r0_C1",
+      "arm_a": "C1",
+      "arm_b": "C1",
+      "b": "bs8_C1",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.25,
+        "losses": 137,
+        "p": 0.807375773732401,
+        "wins": 132
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": -1.05,
+        "losses": 145,
+        "p": 0.22261498925942885,
+        "wins": 124
+      }
+    },
+    {
+      "a": "r1_C1",
+      "arm_a": "C1",
+      "arm_b": "C1",
+      "b": "r0_C1",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -1.7,
+        "losses": 185,
+        "p": 0.07165555366896338,
+        "wins": 151
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": -1.5,
+        "losses": 186,
+        "p": 0.11671830217495116,
+        "wins": 156
+      }
+    },
+    {
+      "a": "sfix_S",
+      "arm_a": "S",
+      "arm_b": "S",
+      "b": "bs8S_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 1.45,
+        "losses": 53,
+        "p": 0.0156441960518488,
+        "wins": 82
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": 1.1,
+        "losses": 60,
+        "p": 0.07765321401762205,
+        "wins": 82
+      }
+    },
+    {
+      "a": "r0_C1",
+      "arm_a": "C1",
+      "arm_b": "S",
+      "b": "r0S_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 5.6,
+        "losses": 136,
+        "p": 1.1712267537020363e-08,
+        "wins": 248
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": 5.65,
+        "losses": 146,
+        "p": 2.135692304298228e-08,
+        "wins": 259
+      }
+    },
+    {
+      "a": "r2b_C1",
+      "arm_a": "C1",
+      "arm_b": "C1",
+      "b": "r2a_C1",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 1.0,
+        "losses": 115,
+        "p": 0.22942485679621288,
+        "wins": 135
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": 1.85,
+        "losses": 106,
+        "p": 0.022333966447492325,
+        "wins": 143
+      }
+    },
+    {
+      "a": "r2c_C1",
+      "arm_a": "C1",
+      "arm_b": "C1",
+      "b": "r2a_C1",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.6,
+        "losses": 127,
+        "p": 0.47957668647454976,
+        "wins": 115
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": 0.2,
+        "losses": 123,
+        "p": 0.8495635544175522,
+        "wins": 127
+      }
+    },
+    {
+      "a": "r2d_S",
+      "arm_a": "S",
+      "arm_b": "S",
+      "b": "r0S_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.0,
+        "losses": 59,
+        "p": 1.0,
+        "wins": 59
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": -0.15,
+        "losses": 60,
+        "p": 0.853408445895563,
+        "wins": 57
+      }
+    },
+    {
+      "a": "r2b_C1",
+      "arm_a": "C1",
+      "arm_b": "S",
+      "b": "r2d_S",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 6.6,
+        "losses": 127,
+        "p": 1.661480793484477e-11,
+        "wins": 259
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "fixedq/B8",
+      "substring": {
+        "delta": 7.65,
+        "losses": 129,
+        "p": 3.299437404897412e-14,
+        "wins": 282
+      }
     }
   ],
   "runs": {
@@ -362,6 +538,8 @@
       "budget": 16,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=16": {
           "clean": {
@@ -386,16 +564,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "similarity_topb",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs16_C1": {
       "arm": "C1",
       "budget": 16,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=16": {
           "clean": {
@@ -420,16 +602,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs32S_S": {
       "arm": "S",
       "budget": 32,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=32": {
           "clean": {
@@ -454,16 +640,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "similarity_topb",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs32_C0": {
       "arm": "C0",
       "budget": 32,
       "cosine_prior": false,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=32": {
           "clean": {
@@ -488,16 +678,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs32_C1": {
       "arm": "C1",
       "budget": 32,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=32": {
           "clean": {
@@ -522,16 +716,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs8S_S": {
       "arm": "S",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -556,16 +754,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "similarity_topb",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "bs8_C1": {
       "arm": "C1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -590,10 +792,12 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0/fixedB",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "d1_A_full": {
       "arm": null,
@@ -601,6 +805,8 @@
       "budget": 8,
       "cosine_prior": true,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -646,10 +852,12 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "d1_C_full": {
       "arm": null,
@@ -657,6 +865,8 @@
       "budget": 8,
       "cosine_prior": true,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -702,10 +912,12 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "gonogo_A_D0": {
       "arm": null,
@@ -713,6 +925,8 @@
       "budget": 4,
       "cosine_prior": null,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=4": {
           "clean": {
@@ -756,10 +970,12 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "gonogo_C_D0": {
       "arm": null,
@@ -767,6 +983,8 @@
       "budget": 4,
       "cosine_prior": null,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=4": {
           "clean": {
@@ -810,10 +1028,12 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "gonogo_P_D0": {
       "arm": null,
@@ -821,6 +1041,8 @@
       "budget": 4,
       "cosine_prior": null,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=4": {
           "clean": {
@@ -864,10 +1086,12 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "pisco_direct",
       "setting": "qdrop0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "gonogo_S_D0": {
       "arm": null,
@@ -875,6 +1099,8 @@
       "budget": 4,
       "cosine_prior": null,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=4": {
           "clean": {
@@ -918,16 +1144,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "similarity_topb",
       "setting": "qdrop0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "hp1_A0": {
       "arm": "A0",
       "budget": 8,
       "cosine_prior": false,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -973,16 +1203,20 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp1_C0": {
       "arm": "C0",
       "budget": 8,
       "cosine_prior": false,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1028,16 +1262,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp1_C1": {
       "arm": "C1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1083,16 +1321,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp1_S": {
       "arm": "S",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1138,16 +1380,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "similarity_topb",
       "setting": "qdrop1.0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp2_A1": {
       "arm": "A1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1193,16 +1439,20 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp2d0_C1": {
       "arm": "C1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1248,16 +1498,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "quro",
       "setting": "qdrop0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp2d0_P": {
       "arm": "P",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1303,16 +1557,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "pisco_direct",
       "setting": "qdrop0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
     },
     "hp2d0_S": {
       "arm": "S",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1358,16 +1616,476 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 0.0,
       "readout": "similarity_topb",
       "setting": "qdrop0",
-      "split": "dev"
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "q4_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D4",
+      "kd_weight": 0.0,
+      "modes": {
+        "D4|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.329,
+            "f1": 0.4438202131202122,
+            "mean_decoder_input_tokens": 59.0,
+            "n": 2000,
+            "substring": 0.3605,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2735,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0555,
+            "f1": 0.09037439088689099,
+            "mean_decoder_input_tokens": 59.0,
+            "n": 2000,
+            "substring": 0.0605,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/D4",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "q4kd_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D4",
+      "kd_weight": 0.5,
+      "modes": {
+        "D4|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3325,
+            "f1": 0.4463293633653921,
+            "mean_decoder_input_tokens": 59.0,
+            "n": 2000,
+            "substring": 0.367,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.285,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0475,
+            "f1": 0.07974666305916311,
+            "mean_decoder_input_tokens": 59.0,
+            "n": 2000,
+            "substring": 0.0515,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/D4/kd0.5",
+      "split": "dev",
+      "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "q5_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D5",
+      "kd_weight": 0.0,
+      "modes": {
+        "D5|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3285,
+            "f1": 0.4440598433429309,
+            "mean_decoder_input_tokens": 17.0,
+            "n": 2000,
+            "substring": 0.356,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.275,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0535,
+            "f1": 0.09163549506049515,
+            "mean_decoder_input_tokens": 17.0,
+            "n": 2000,
+            "substring": 0.057,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/D5",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "q5kd_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D5",
+      "kd_weight": 0.5,
+      "modes": {
+        "D5|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3245,
+            "f1": 0.43632304179738335,
+            "mean_decoder_input_tokens": 17.0,
+            "n": 2000,
+            "substring": 0.3525,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.267,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.0575,
+            "f1": 0.09292602120102128,
+            "mean_decoder_input_tokens": 17.0,
+            "n": 2000,
+            "substring": 0.0615,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/D5/kd0.5",
+      "split": "dev",
+      "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "r0S_S": {
+      "arm": "S",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.375,
+            "f1": 0.48963290539869425,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.405,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1315,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2435,
+            "f1": 0.33806994073178254,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2575,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "similarity_topb",
+      "setting": "fixedq/B8",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "r0_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.431,
+            "f1": 0.5598469406324665,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4615,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2055,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2255,
+            "f1": 0.31404233829036426,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2405,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "r1_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.414,
+            "f1": 0.5358366817663935,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4465,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.202,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.212,
+            "f1": 0.2945840424281599,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2285,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/grouped_lr",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "r2a_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.431,
+            "f1": 0.5598469406324665,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4615,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2055,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2255,
+            "f1": 0.31404233829036426,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2405,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "r2b_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.5,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.441,
+            "f1": 0.5712121437042482,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.48,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.2135,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2275,
+            "f1": 0.3208590163921044,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.2445,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/kd0.5",
+      "split": "dev",
+      "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "r2c_C1": {
+      "arm": "C1",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 1.0,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.425,
+            "f1": 0.5532264879539988,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4635,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1955,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2295,
+            "f1": 0.32117950521700495,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.246,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "quro",
+      "setting": "fixedq/B8/kd1.0",
+      "split": "dev",
+      "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "r2d_S": {
+      "arm": "S",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.5,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.375,
+            "f1": 0.48883955823588116,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.4035,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1335,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.2415,
+            "f1": 0.3356770713935186,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.258,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "similarity_topb",
+      "setting": "fixedq/B8/kd0.5",
+      "split": "dev",
+      "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "sfix_S": {
+      "arm": "S",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.3865,
+            "f1": 0.4990267217855445,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.418,
+            "xi_eff": 139.194625
+          },
+          "evidence_em": 0.1415,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.245,
+            "f1": 0.33637770979020953,
+            "mean_decoder_input_tokens": 74.882,
+            "n": 2000,
+            "substring": 0.261,
+            "xi_eff": 139.194625
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "shared_current",
+      "query_text_dropout": 0.0,
+      "readout": "similarity_topb",
+      "setting": "sharedq/B8/bypass_fixed",
+      "split": "dev",
+      "teacher_logits": null
     },
     "w1_A0": {
       "arm": "A0",
       "budget": 8,
       "cosine_prior": false,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1413,16 +2131,20 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "w1_A1": {
       "arm": "A1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1468,16 +2190,20 @@
         }
       },
       "output_query_mode": "agnostic",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "w1_C0": {
       "arm": "C0",
       "budget": 8,
       "cosine_prior": false,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1523,16 +2249,20 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     },
     "w1_C1": {
       "arm": "C1",
       "budget": 8,
       "cosine_prior": true,
       "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": null,
       "modes": {
         "D0|B=8": {
           "clean": {
@@ -1578,10 +2308,12 @@
         }
       },
       "output_query_mode": "xattn",
+      "query_representation": null,
       "query_text_dropout": 1.0,
       "readout": "quro",
       "setting": "qdrop1.0",
-      "split": "trivia"
+      "split": "trivia",
+      "teacher_logits": null
     }
   }
 }
