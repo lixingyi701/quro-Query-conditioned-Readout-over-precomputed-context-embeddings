@@ -52,7 +52,12 @@ DECODER_LR="${DECODER_LR:-}"
 # Validate during training so "not enough steps" and "not enough capacity" can be
 # told apart; 0 keeps the old final-step-only protocol.
 EVAL_EVERY="${EVAL_EVERY:-0}"
+# Free-form pass-through, for flags that come in pairs and would otherwise each
+# need their own variable -- e.g. KD_ARGS="--teacher_logits path --kd_weight 0.5".
+KD_ARGS="${KD_ARGS:-}"
 EXTRA_FLAGS=()
+# Deliberately unquoted: KD_ARGS is a flag list, not one argument.
+[ -n "$KD_ARGS" ] && EXTRA_FLAGS+=($KD_ARGS)
 [ -n "$QUERY_REP" ] && EXTRA_FLAGS+=(--query_representation "$QUERY_REP")
 [ -n "$DECODER_LR" ] && EXTRA_FLAGS+=(--decoder_lr "$DECODER_LR")
 [ "$EVAL_EVERY" -gt 0 ] && EXTRA_FLAGS+=(--eval_every "$EVAL_EVERY")
