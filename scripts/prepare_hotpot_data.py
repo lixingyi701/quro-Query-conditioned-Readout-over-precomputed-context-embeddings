@@ -31,6 +31,15 @@ cheaper than retrofitting one after the fact.
 Paragraph order is left exactly as the dataset shuffled it.  ``gold_ranks``
 records where the two gold paragraphs landed, so attention targeting can be
 scored without assuming they are adjacent -- they generally are not.
+
+``supporting_sentences`` carries HotpotQA's ``supporting_facts``: the 2-3
+sentences that actually justify the answer, with the paragraph they sit in.  The
+answer alone supervises only ~4 token positions per example, which is the entire
+signal reaching a 24M-parameter readout through a frozen 7B; these sentences are
+free, query-relevant, and an order of magnitude denser.  They are the natural
+target for a reconstruction auxiliary -- note this is *selective* reconstruction,
+not the full-document objective SeleCom argues against, and the distinction has
+to be stated wherever it is used.
 """
 
 from __future__ import annotations
@@ -65,16 +74,35 @@ def convert_rows(frame: pd.DataFrame, prefix: str, corpus: dict) -> list:
     for _, item in frame.iterrows():
         context = item["context"]
         titles, sentences = list(context["title"]), list(context["sentences"])
-        gold_titles = {str(t) for t in item["supporting_facts"]["title"]}
+        facts = item["supporting_facts"]
+        gold_titles = {str(t) for t in facts["title"]}
 
         doc_ids, gold_ranks = [], []
+        rank_of_title, sents_of_title = {}, {}
         for position, (title, sents) in enumerate(zip(titles, sentences)):
             text = paragraph_text(title, sents)
             doc_id = doc_id_for(text)
             corpus.setdefault(doc_id, text)
             doc_ids.append(doc_id)
+            # A title can repeat across the ten paragraphs; first occurrence wins,
+            # matching the order gold_ranks is built in.
+            rank_of_title.setdefault(str(title), position)
+            sents_of_title.setdefault(str(title), [str(s) for s in sents])
             if str(title) in gold_titles:
                 gold_ranks.append(position)
+
+        # supporting_facts indexes sentences within a titled paragraph.  A few
+        # rows point past the end of their paragraph in the released data, so the
+        # bound is checked rather than assumed; dropped facts are counted below.
+        supporting, dropped = [], 0
+        for title, sent_id in zip(facts["title"], facts["sent_id"]):
+            title, sent_id = str(title), int(sent_id)
+            sents = sents_of_title.get(title)
+            if sents is None or not 0 <= sent_id < len(sents):
+                dropped += 1
+                continue
+            supporting.append({"doc_rank": rank_of_title[title], "sent_id": sent_id,
+                               "text": sents[sent_id].strip()})
 
         answer = str(item["answer"])
         rows.append({
@@ -88,6 +116,8 @@ def convert_rows(frame: pd.DataFrame, prefix: str, corpus: dict) -> list:
             "gold_ranks": gold_ranks,
             "n_gold": len(gold_ranks),
             "n_distractors": len(doc_ids) - len(gold_ranks),
+            "supporting_sentences": supporting,
+            "dropped_supporting_facts": dropped,
             "hop_type": str(item["type"]),          # bridge | comparison
             "level": str(item["level"]),
             # Comparison questions are largely yes/no.  A model can reach a fifth
@@ -118,6 +148,20 @@ def describe(name: str, rows: list) -> dict:
         "adjacent_golds": sum(
             1 for r in rows if len(r["gold_ranks"]) == 2
             and abs(r["gold_ranks"][0] - r["gold_ranks"][1]) == 1),
+        "supporting_sentences": dict(
+            Counter(len(r["supporting_sentences"]) for r in rows)),
+        # Supporting facts that pointed past the end of their paragraph.  Reported
+        # rather than assumed zero: a reconstruction target built on a silently
+        # dropped fact would supervise the wrong sentence.
+        "rows_with_dropped_facts": sum(1 for r in rows if r["dropped_supporting_facts"]),
+        "supporting_tokens_per_row": round(sum(
+            len(s["text"].split()) for r in rows for s in r["supporting_sentences"]
+        ) / max(1, len(rows)), 1),
+        # A supporting sentence sitting in a non-gold paragraph would break the
+        # correspondence gold_ranks is supposed to encode.
+        "facts_outside_gold": sum(
+            1 for r in rows for s in r["supporting_sentences"]
+            if s["doc_rank"] not in r["gold_ranks"]),
     }
 
 
