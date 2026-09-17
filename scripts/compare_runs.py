@@ -77,6 +77,11 @@ def main():
     ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--split", default="dev")
     ap.add_argument("--mode", default="D0")
+    # Runs that differ in what the decoder reads are still compared per question:
+    # the arms answer the same 2000 items, so the pairing is by id and the modes
+    # only decide which metric key and which predictions file to read.
+    ap.add_argument("--baseline_mode", default=None,
+                    help="decoder input mode of the baseline, if it differs")
     ap.add_argument("--budget", type=int, default=8)
     ap.add_argument("--label", nargs="*", default=None,
                     help="human-readable name per run, baseline first")
@@ -84,14 +89,16 @@ def main():
 
     tags = [args.baseline] + args.runs
     labels = dict(zip(tags, args.label)) if args.label else {}
-    clean = f"{args.split}|{args.mode}|B={args.budget}"
-    floor = f"{args.split}/mismatch-doc|{args.mode}|B={args.budget}"
+    baseline_mode = args.baseline_mode or args.mode
+    modes = {tag: (baseline_mode if tag == args.baseline else args.mode) for tag in tags}
 
     print(f"{'run':<10}{'label':<20}{'EM':>8}{'sub':>8}{'floor':>8}{'evidence':>10}"
           f"{'best val':>10}")
     print("-" * 74)
     available = []
     for tag in tags:
+        clean = f"{args.split}|{modes[tag]}|B={args.budget}"
+        floor = f"{args.split}/mismatch-doc|{modes[tag]}|B={args.budget}"
         result = load_result(args.runs_dir, tag)
         if result is None or clean not in result.get("metrics", {}):
             print(f"{tag:<10}{labels.get(tag, ''):<20}{'(no result yet)':>44}")
@@ -121,9 +128,9 @@ def main():
             continue
         directions = {}
         for metric in ("em", "substring"):
-            a = load_predictions(args.runs_dir, tag, args.split, args.mode, args.budget)
+            a = load_predictions(args.runs_dir, tag, args.split, modes[tag], args.budget)
             b = load_predictions(args.runs_dir, args.baseline, args.split,
-                                 args.mode, args.budget)
+                                 baseline_mode, args.budget)
             if not a or not b:
                 continue
             ids = [i for i in a if i in b]
