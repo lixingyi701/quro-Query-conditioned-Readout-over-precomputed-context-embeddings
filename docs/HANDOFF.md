@@ -1,5 +1,7 @@
 # 交接状态（截至 2026-09-17）
 
+> **2026-09-17 训练方案复审：** 下一步实施前请读 [TRAINING_STRATEGY_REVIEW_AND_PLAN.md](TRAINING_STRATEGY_REVIEW_AND_PLAN.md)。它收窄了本文“预算已排除、只剩两个原因、分支干预可决定损失位置”的表述，并提出固定 query 表示、分组优化、CE/KL/证据覆盖的受控实验矩阵。下文历史分析保留；该新文档是待验证建议，不是已运行结果。
+
 新会话从这里开始。本文合并了原先的 HANDOFF 与 `warning_and_target.md`——后者的实施要求已有 W1/W2/W4/W5 完成，留着两份只会让人读到作废的结论。**结果不在本文，在 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)。**
 
 ---
