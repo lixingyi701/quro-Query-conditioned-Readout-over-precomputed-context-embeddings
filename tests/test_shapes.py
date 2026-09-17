@@ -593,6 +593,87 @@ def test_query_adapter_checkpoint():
         check("loading a shared_current checkpoint into fixed_adapter is rejected", True)
 
 
+def test_distillation_loss():
+    """The KL must behave like a divergence, and must not renormalise the top-k.
+
+    The trap this guards: storing the teacher's top-k logits and softmaxing over
+    those k gives a *different* distribution -- it deletes the tail and rescales
+    what is left -- so a student that matched it exactly would still be wrong.
+    The cache stores full-vocabulary probabilities plus the tail mass, and the
+    divergence treats the tail as one aggregate bucket.
+    """
+    from src.distill import distillation_loss, teacher_probabilities
+
+    torch.manual_seed(0)
+    n, vocab, k, temperature = 6, 64, 8, 2.0
+    teacher_logits = torch.randn(n, vocab) * 3
+    index, probability, tail = teacher_probabilities(teacher_logits, k, temperature)
+
+    check("stored teacher mass sums to one with the tail",
+          torch.allclose(probability.sum(-1) + tail, torch.ones(n), atol=1e-5),
+          f"max|diff|={float((probability.sum(-1) + tail - 1).abs().max()):.2e}")
+    check("the tail is the mass outside the top-k, not zero",
+          float(tail.min()) > 0 and float(tail.max()) < 1)
+
+    # A student identical to the teacher must give (numerically) zero.
+    same = distillation_loss(teacher_logits, index, probability, tail, temperature)
+    check("KL(teacher || teacher) is zero", float(same) < 1e-5, f"{float(same):.2e}")
+
+    # Any other student must give strictly more.
+    other = distillation_loss(torch.randn(n, vocab) * 3, index, probability, tail,
+                              temperature)
+    check("a different student scores strictly higher", float(other) > float(same),
+          f"{float(other):.4f} vs {float(same):.2e}")
+    check("the divergence is never negative", float(other) >= 0)
+
+    # Renormalising over the top-k is the mistake: a student fitted to *that*
+    # distribution must not score zero against the correctly stored one.
+    renormalised = probability / probability.sum(-1, keepdim=True)
+    fake = torch.full((n, vocab), -30.0)
+    fake.scatter_(-1, index, renormalised.clamp_min(1e-9).log() * temperature)
+    wrong = distillation_loss(fake, index, probability, tail, temperature)
+    check("a top-k-renormalised student does NOT match the stored teacher",
+          float(wrong) > 1e-3, f"{float(wrong):.4f}")
+
+    # Gradients must reach the student's logits, including through the tail term.
+    student = (torch.randn(n, vocab) * 3).requires_grad_(True)
+    distillation_loss(student, index, probability, tail, temperature).backward()
+    check("the loss is differentiable w.r.t. the student",
+          student.grad is not None and torch.isfinite(student.grad).all().item()
+          and float(student.grad.abs().max()) > 0)
+
+    # Misalignment must be an error, not a silently wrong objective.
+    try:
+        distillation_loss(student[:2], index, probability, tail, temperature)
+        check("a row-count mismatch is rejected", False)
+    except ValueError:
+        check("a row-count mismatch is rejected", True)
+
+
+def test_answer_positions():
+    """Answer positions are read with the causal shift and indexed relatively.
+
+    Teacher and student prompts differ in length (80 soft tokens against 8), so
+    absolute positions do not correspond; only the answer-relative index does.
+    """
+    from src.model import QuROModel
+
+    # Two rows, different prompt lengths, same two-token answer.
+    labels = torch.tensor([
+        [-100, -100, -100, 11, 12, -100],
+        [-100, 11, 12, -100, -100, -100],
+    ])
+    rows, cols, order = QuROModel.answer_positions(labels)
+    check("one position per answer token", rows.numel() == 4)
+    check("answer-relative index restarts per row",
+          order.tolist() == [0, 1, 0, 1], str(order.tolist()))
+    # logits[t] predicts labels[t+1], so the columns are one before the labels.
+    check("the causal shift is applied", cols.tolist() == [2, 3, 0, 1],
+          str(cols.tolist()))
+    check("the predicted tokens are the answer tokens",
+          labels[:, 1:][rows, cols].tolist() == [11, 12, 11, 12])
+
+
 def test_arm_labels():
     """A config must report the arm it implements, not the arm it is tagged."""
     from config import apply_arm, arm_label, get_config
@@ -719,6 +800,8 @@ def main():
         test_arms(m, h, h)
         test_cosine_prior_short_rows(m, h, h)
         test_output_modes(m, h, h)
+        test_distillation_loss()
+        test_answer_positions()
         test_arm_labels()
         test_query_representation()
         test_query_vector_routing()

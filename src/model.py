@@ -25,6 +25,7 @@ import torch.nn as nn
 
 from .baselines import (PiscoDirectReadout, SimilarityTopBReadout,
                         encode_query_in_generator_space, pool_query_in_generator_space)
+from .distill import distillation_loss
 from .prompt import DECODER_INPUT_MODES, SLOTLESS_MODES, PiscoPromptBuilder, assemble_inputs
 from .readout import QuroReadout
 
@@ -526,14 +527,44 @@ class QuROModel(nn.Module):
                 query, budget, documents[i] if documents else None))
         return prompts
 
-    def qa_loss(self, batch, budget=None, return_attn=False):
+    @staticmethod
+    def answer_positions(labels):
+        """Where the answer is predicted, in answer-relative order.
+
+        A causal LM's logit at ``t`` predicts the token at ``t+1``, so the
+        supervised positions are ``labels[:, 1:] != -100`` read off ``logits[:, :-1]``.
+        Teacher and student prompts have different lengths -- 80 soft tokens
+        against 8 -- so absolute positions do not correspond; the answer suffix is
+        identical, so the *relative* index within each row does.  Distillation
+        aligns on that index, never on the raw position.
+
+        Returns ``(rows, cols, order)``: which batch row, which logit index, and
+        which answer token it is.
+        """
+        supervised = labels[:, 1:] != -100
+        rows, cols = supervised.nonzero(as_tuple=True)
+        # Rank within each row: nonzero() yields row-major order, so a cumulative
+        # count over the mask gives the answer-relative index directly.
+        order = (supervised.long().cumsum(dim=1)[rows, cols] - 1)
+        return rows, cols, order
+
+    def qa_loss(self, batch, budget=None, return_attn=False, return_logits=False):
         result = self.readout_cached(batch, budget=budget, return_attn=return_attn)
         prompts = self.build_prompts(batch, result["soft_token_mask"], training=self.training)
         packed = assemble_inputs(
             self.lm.get_input_embeddings(), prompts,
             result["soft_tokens"], result["soft_token_mask"],
             target_ids=batch["target_ids"], pad_token_id=self.pad_id, pad_side="right")
-        return self.lm(**packed).loss, result
+        output = self.lm(**packed)
+        if return_logits:
+            rows, cols, order = self.answer_positions(packed["labels"])
+            # Only the supervised rows are kept: the full (B, T, V) tensor is
+            # mostly prompt, and distillation has nothing to say about it.
+            result["answer_logits"] = output.logits[rows, cols]
+            result["answer_rows"] = rows
+            result["answer_order"] = order
+            result["answer_targets"] = packed["labels"][:, 1:][rows, cols]
+        return output.loss, result
 
     def residual_penalty(self, result) -> torch.Tensor:
         """Keep the trained residual small relative to the pooled cached latents.
@@ -553,11 +584,48 @@ class QuROModel(nn.Module):
         # Already a mean square, so no sqrt is taken anywhere on the grad path.
         return aux["delta_ms"] / aux["pooled_ms"].detach().clamp_min(1e-6)
 
-    def forward(self, batch, budget=None, residual_weight: float = 0.0):
-        qa, result = self.qa_loss(batch, budget=budget)
+    def distillation_loss(self, batch, result, teacher):
+        """KL(P || student) over the answer tokens, aligned by answer index.
+
+        The teacher's prompt is longer -- 80 soft tokens against 8 -- so absolute
+        positions do not correspond and only the answer-relative index does.  The
+        stored target ids are compared against the student's as an assertion:
+        if the two ever teacher-force different tokens, the alignment is wrong and
+        the loss would be pulling towards the distribution for some other word.
+        """
+        rows = result["answer_rows"].cpu().tolist()
+        orders = result["answer_order"].cpu().tolist()
+        ids = [batch["ids"][row] for row in rows]
+        index, probability, tail, keep, targets = teacher.gather(
+            ids, orders, result["answer_logits"].device)
+        if not bool(keep.any()):
+            return None
+        mismatch = keep & (targets.long() != result["answer_targets"].long())
+        if bool(mismatch.any()):
+            raise ValueError(
+                f"{int(mismatch.sum())} answer positions teacher-force a different "
+                "token than the cached teacher did; the distillation alignment is "
+                "wrong (check max_answer_len and the tokenizer against the cache "
+                "metadata)")
+        return distillation_loss(
+            result["answer_logits"][keep], index[keep], probability[keep],
+            tail[keep], temperature=teacher.temperature)
+
+    def forward(self, batch, budget=None, residual_weight: float = 0.0,
+                teacher=None, kd_weight: float = 0.0):
+        want_logits = teacher is not None and kd_weight > 0
+        qa, result = self.qa_loss(batch, budget=budget, return_logits=want_logits)
         total = self.cfg.train.beta_qa * qa
         output = {"qa_loss": qa.detach(),
                   "mean_budget": result["budgets"].float().mean().detach()}
+        if want_logits:
+            # The gold CE stays: the teacher is wrong on plenty of questions, and
+            # replacing the labels with it would cap the student at the teacher's
+            # mistakes as well as its ceiling.
+            kd = self.distillation_loss(batch, result, teacher)
+            if kd is not None:
+                total = total + kd_weight * (teacher.temperature ** 2) * kd
+                output["kd_loss"] = kd.detach()
         if residual_weight > 0:
             penalty = self.residual_penalty(result)
             total = total + residual_weight * penalty

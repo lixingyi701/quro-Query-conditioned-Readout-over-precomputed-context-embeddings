@@ -37,6 +37,7 @@ from config import apply_arm, arm_label, get_config, parse_eval_files
 from src import metrics
 from src.cache import LatentCache
 from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
+from src.distill import TeacherCache
 from src.model import build_model
 
 
@@ -83,6 +84,14 @@ def build_args():
                     help="separate LR for the decoder LoRA; defaults to --lr")
     ap.add_argument("--grad_accum", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
+    # Distillation from the full-cache teacher.  The gap to P is what defines the
+    # problem, so P is the teacher; the gold CE stays because P is wrong often
+    # enough that replacing the labels would inherit its mistakes too.
+    ap.add_argument("--teacher_logits", default=None,
+                    help="precomputed teacher distributions from "
+                         "scripts/build_teacher_logits.py")
+    ap.add_argument("--kd_weight", type=float, default=0.0,
+                    help="weight on the KL term; 0 disables distillation")
     ap.add_argument("--warm_start", action="store_true",
                     help="with --resume_from: load weights only, and build a fresh "
                          "optimiser and schedule instead of continuing the old run")
@@ -351,6 +360,8 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         # same system and must not be pooled.
         "query_representation": cfg.query_encoder.representation,
         "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
+        "kd_weight": args.kd_weight,
+        "teacher_logits": args.teacher_logits,
         "readout_output_mode": cfg.readout.output_mode,
         "out_proj_init": cfg.readout.out_proj_init,
         "generator_lora_init": cfg.generator.lora_init,
@@ -510,6 +521,29 @@ def main():
         print(f"[val] every {cfg.train.eval_every} steps on {len(small)} rows of "
               f"{name}, selecting on {cfg.train.select_metric}")
 
+    teacher = None
+    if args.teacher_logits:
+        if args.kd_weight <= 0:
+            raise SystemExit("--teacher_logits given but --kd_weight is 0")
+        teacher = TeacherCache.load(args.teacher_logits)
+        meta = teacher.meta
+        if meta.get("split") != "train":
+            raise SystemExit(
+                f"teacher cache was built from {meta.get('split')!r}; distilling on "
+                "anything but train routes evaluation data into the student")
+        if meta.get("cache_dir") != cfg.data.cache_dir:
+            raise SystemExit(
+                f"teacher read latents from {meta.get('cache_dir')} but this run "
+                f"reads {cfg.data.cache_dir}; they are different documents")
+        if meta.get("source_file") != cfg.data.train_file:
+            raise SystemExit(
+                f"teacher was built on {meta.get('source_file')} but this run trains "
+                f"on {cfg.data.train_file}; example ids would not correspond")
+        print(f"[kd] teacher={meta['teacher']} step={meta['teacher_step']} "
+              f"B={meta['teacher_budget']} T={meta['temperature']} "
+              f"top_k={meta['top_k']} | {meta['examples']} examples, "
+              f"{meta['positions']} positions | weight={args.kd_weight}")
+
     iterator = cycle(train_loader)
     model.train()
     rng = random.Random(cfg.train.seed)
@@ -526,10 +560,12 @@ def main():
                       else cfg.readout.max_budget)
 
             optimizer.zero_grad(set_to_none=True)
-            totals = {"loss": 0.0, "qa_loss": 0.0, "mean_budget": 0.0, "residual_penalty": 0.0}
+            totals = {"loss": 0.0, "qa_loss": 0.0, "mean_budget": 0.0,
+                      "residual_penalty": 0.0, "kd_loss": 0.0}
             for _ in range(max(1, cfg.train.grad_accum)):
                 batch = move_to_device(next(iterator), device)
-                output = model(batch, budget=budget, residual_weight=residual_weight)
+                output = model(batch, budget=budget, residual_weight=residual_weight,
+                               teacher=teacher, kd_weight=args.kd_weight)
                 (output["loss"] / cfg.train.grad_accum).backward()
                 for key in totals:
                     if key in output:
