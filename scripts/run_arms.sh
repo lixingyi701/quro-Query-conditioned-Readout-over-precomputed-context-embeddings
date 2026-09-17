@@ -44,6 +44,18 @@ QDROP="${QDROP:-1.0}"
 EVAL_MODES="${EVAL_MODES:-D0,D1}"
 SEED="${SEED:-42}"
 PRESET="${PRESET:-pisco_gonogo}"
+# shared_current is the historical behaviour and stays the default; fixed_adapter
+# makes the query a genuinely fixed function (HANDOFF.md §3 W3).
+QUERY_REP="${QUERY_REP:-}"
+# The readout starts from scratch, the decoder LoRA from PISCO's trained weights.
+DECODER_LR="${DECODER_LR:-}"
+# Validate during training so "not enough steps" and "not enough capacity" can be
+# told apart; 0 keeps the old final-step-only protocol.
+EVAL_EVERY="${EVAL_EVERY:-0}"
+EXTRA_FLAGS=()
+[ -n "$QUERY_REP" ] && EXTRA_FLAGS+=(--query_representation "$QUERY_REP")
+[ -n "$DECODER_LR" ] && EXTRA_FLAGS+=(--decoder_lr "$DECODER_LR")
+[ "$EVAL_EVERY" -gt 0 ] && EXTRA_FLAGS+=(--eval_every "$EVAL_EVERY")
 # Only the development split by default.  HotpotQA's test half exists to be left
 # alone until a protocol is locked (HANDOFF.md §2).
 EVAL_FILES="${EVAL_FILES:-trivia=/data02/quro/data/trivia/queries.jsonl}"
@@ -91,7 +103,7 @@ for arm in "${ARMS[@]}"; do
       --num_workers 4 --doc_control \
       --eval_max_samples 2000 \
       --eval_files "$EVAL_FILES" \
-      "${extra[@]}" --tag "$tag" --out_dir "$out" \
+      "${extra[@]}" "${EXTRA_FLAGS[@]+${EXTRA_FLAGS[@]}}" --tag "$tag" --out_dir "$out" \
       > "$RUNS/$tag.log" 2>&1 &
   i=$((i + 1))
 done
