@@ -29,6 +29,7 @@ __version__ = "0.1.0"
 class ReadoutConfig:
     # "quro"            : query-conditioned Perceiver-IO-style readout (ours)
     # "pisco_direct"    : no selection, hand every cached latent to the decoder
+    # "pisco_residual"  : all original latents + zero-initialised query correction
     # "similarity_topb" : non-parametric top-B by cosine similarity to the query
     kind: str = "quro"
 
@@ -94,8 +95,13 @@ class ReadoutConfig:
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
-        if self.kind not in {"quro", "pisco_direct", "similarity_topb"}:
+        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "pisco_residual"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
+        if self.kind == "pisco_residual" and self.adaptive_budget:
+            raise ValueError("pisco_residual preserves all latents; adaptive budget is unsupported")
+        if self.kind == "pisco_residual" and (self.output_mode != "full" or
+                not self.residual_readout or self.out_proj_init == "default"):
+            raise ValueError("pisco_residual requires full identity path and zero output init")
         if self.prior_mode not in {"rank", "shared"}:
             raise ValueError(f"unknown prior_mode: {self.prior_mode}")
         if self.output_mode not in {"full", "pool_only", "delta_only"}:
@@ -374,6 +380,7 @@ ARMS = {
     "C1": {"kind": "quro", "output_query_mode": "xattn", "cosine_prior": True},
     "S": {"kind": "similarity_topb"},
     "P": {"kind": "pisco_direct"},
+    "R": {"kind": "pisco_residual", "cosine_prior": False},
 }
 
 
@@ -401,6 +408,8 @@ def arm_label(cfg: Config) -> str:
         return "S"
     if r.kind == "pisco_direct":
         return "P"
+    if r.kind == "pisco_residual":
+        return "R"
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":

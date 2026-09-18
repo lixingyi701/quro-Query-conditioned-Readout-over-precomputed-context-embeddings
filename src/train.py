@@ -75,6 +75,8 @@ def build_args():
     # Derived from config.PRESETS rather than repeated: a hardcoded copy silently
     # hides every preset added after it was written.
     ap.add_argument("--preset", default="pisco_smoke", choices=sorted(config_module.PRESETS))
+    ap.add_argument("--config_json", default=None,
+                    help="rebuild a saved run config before applying explicit overrides")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out_dir", default=None)
     ap.add_argument("--steps", type=int, default=None)
@@ -102,14 +104,17 @@ def build_args():
                     help="which metric picks checkpoint_best.pt; fix it before the run")
     ap.add_argument("--device", default=None)
     ap.add_argument("--resume_from", default=None)
+    ap.add_argument("--baseline_run", default=None,
+                    help="start a NEW full-length P/R experiment from this P run's "
+                         "config.json and checkpoint_last.pt; requires --out_dir")
 
-    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb"], default=None)
+    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "pisco_residual"], default=None)
     ap.add_argument("--output_query_mode",
                     choices=["agnostic", "agnostic_matched", "add", "film", "concat", "xattn"],
                     default=None)
     # Sets output_query_mode and cosine_prior together, so an arm cannot be
     # half-specified the way the historical A runs were (HANDOFF.md §3 W1).
-    ap.add_argument("--arm", choices=["A0", "A1", "C0", "C1", "S", "P"], default=None)
+    ap.add_argument("--arm", choices=sorted(config_module.ARMS), default=None)
     ap.add_argument("--agnostic_param_matched", action="store_true",
                     help="A arms use agnostic_matched, so A and C have equal parameters")
     ap.add_argument("--budget", type=int, default=None, help="B_max and the fixed eval budget")
@@ -378,6 +383,9 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "offline_m": cache.metadata.latent_size,
         "offline_compressor": cache.metadata.compressor,
         "offline_compr_rate": cache.metadata.compr_rate,
+        "baseline_initialization": getattr(model, "baseline_initialization", None),
+        "budget_semantics": ("all_cached_latents" if cfg.readout.kind in
+                             {"pisco_direct", "pisco_residual"} else "output_budget"),
         "metrics": {},
     }
     original_mode = model.decoder_input_mode
@@ -411,7 +419,50 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
 
 def main():
     args = build_args()
-    cfg = apply_overrides(get_config(args.preset), args)
+    baseline_checkpoint = None
+    if args.baseline_run:
+        if args.config_json:
+            raise SystemExit("choose --baseline_run or --config_json, not both")
+        if args.resume_from or args.warm_start:
+            raise SystemExit("--baseline_run starts a new run; do not combine with resume/warm_start")
+        if not args.out_dir or os.path.realpath(args.out_dir) == os.path.realpath(args.baseline_run):
+            raise SystemExit("--baseline_run requires a separate --out_dir")
+        if os.path.exists(os.path.join(args.out_dir, "config.json")):
+            raise SystemExit("baseline experiment output already exists; use a fresh --out_dir")
+        with open(os.path.join(args.baseline_run, "config.json"), encoding="utf-8") as f:
+            saved_cfg = json.load(f)
+        cfg = config_module.Config()
+        for name, values in saved_cfg.items():
+            setattr(cfg, name, type(getattr(cfg, name))(**values))
+        if cfg.readout.kind != "pisco_direct":
+            raise SystemExit("--baseline_run must point to a P (pisco_direct) run")
+        cfg.train.resume_from = None
+        cfg.train.budget_dropout = False
+        cfg.train.residual_weight = 0.0
+        cfg.generator.lora_init = "frozen"
+        cfg.query_encoder.representation = "fixed_adapter"
+        cfg.readout.d_readout = 256
+        cfg.readout.num_blocks = 1
+        cfg.readout.dropout = 0.0
+        cfg.readout.kind = "pisco_residual"
+        cfg.readout.cosine_prior = False
+        cfg = apply_overrides(cfg, args)
+        if cfg.readout.kind not in {"pisco_direct", "pisco_residual"}:
+            raise SystemExit("baseline experiment supports only P and R")
+        if cfg.decoder.input_mode != "D0" or cfg.decoder.query_text_dropout != 0:
+            raise SystemExit("baseline experiment requires D0 and query_text_dropout=0")
+        if args.teacher_logits or args.kd_weight:
+            raise SystemExit("first baseline experiment uses CE only; KD is disabled")
+        if cfg.readout.adaptive_budget or cfg.train.budget_dropout:
+            raise SystemExit("baseline experiment keeps all latent tokens")
+        baseline_checkpoint = os.path.join(args.baseline_run, "checkpoint_last.pt")
+    else:
+        cfg = get_config(args.preset)
+        if args.config_json:
+            with open(args.config_json, encoding="utf-8") as f:
+                for name, values in json.load(f).items():
+                    setattr(cfg, name, type(getattr(cfg, name))(**values))
+        cfg = apply_overrides(cfg, args)
     os.makedirs(cfg.train.out_dir, exist_ok=True)
     set_seed(cfg.train.seed)
     device = pick_device(cfg.train.device)
@@ -431,6 +482,10 @@ def main():
         print("[generator] PISCO adapters disabled: plain Mistral-7B-Instruct-v0.2")
     model.to(device)
     stack.lm.to(device)
+    if baseline_checkpoint:
+        from src.refinement import initialize_from_pisco
+        model.baseline_initialization = initialize_from_pisco(model, baseline_checkpoint)
+        print(f"[baseline] {model.baseline_initialization}")
     cfg.to_json(os.path.join(cfg.train.out_dir, "config.json"))
     print(cfg.summary())
     report = model.parameter_report()
@@ -447,6 +502,20 @@ def main():
         cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
         args.doc_control, corpus)
     print(f"[data] train={len(train_set)} device={device}")
+
+    if baseline_checkpoint and cfg.readout.kind == "pisco_residual":
+        from src.refinement import verify_pisco_identity
+        # No shuffled loader iteration: the check must not consume training RNG.
+        state = torch.random.get_rng_state()
+        cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        probe = collator([train_set[i] for i in range(min(2, len(train_set)))])
+        check = verify_pisco_identity(model, move_to_device(probe, device))
+        torch.random.set_rng_state(state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
+        with open(os.path.join(cfg.train.out_dir, "baseline_identity.json"), "w") as f:
+            json.dump({**model.baseline_initialization, **check}, f, indent=2)
+        print(f"[baseline identity] {check}")
 
     if args.eval_only:
         if cfg.train.resume_from:
@@ -552,6 +621,10 @@ def main():
               f"top_k={meta['top_k']} | {meta['examples']} examples, "
               f"{meta['positions']} positions | weight={args.kd_weight}")
 
+    if args.baseline_run:
+        # P and R construct different modules. Reset after construction so this
+        # does not change the shuffled training examples in a matched comparison.
+        set_seed(cfg.train.seed)
     iterator = cycle(train_loader)
     model.train()
     rng = random.Random(cfg.train.seed)
@@ -574,11 +647,14 @@ def main():
                 batch = move_to_device(next(iterator), device)
                 output = model(batch, budget=budget, residual_weight=residual_weight,
                                teacher=teacher, kd_weight=args.kd_weight)
+                if not bool(torch.isfinite(output["loss"])):
+                    raise FloatingPointError(f"non-finite loss at step {step + 1}; no update applied")
                 (output["loss"] / cfg.train.grad_accum).backward()
                 for key in totals:
                     if key in output:
                         totals[key] += float(output[key]) / cfg.train.grad_accum
-            grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip,
+                                                       error_if_nonfinite=True)
             optimizer.step()
             scheduler.step()
 

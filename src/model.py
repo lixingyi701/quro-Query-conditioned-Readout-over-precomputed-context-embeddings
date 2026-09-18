@@ -29,6 +29,7 @@ from .distill import distillation_loss
 from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
                      PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
+from .refinement import PiscoResidualReadout
 
 
 class TokenEmbeddingQueryEncoder(nn.Module):
@@ -334,6 +335,11 @@ class QuROModel(nn.Module):
                 prior_mode=r.prior_mode, tau_init=r.tau_init)
         elif r.kind == "pisco_direct":
             self.readout = PiscoDirectReadout(self.cache_hidden, self.d_gen)
+        elif r.kind == "pisco_residual":
+            self.readout = PiscoResidualReadout(
+                self.cache_hidden, self.d_gen, query_encoder.out_dim,
+                d_readout=r.d_readout, num_heads=r.num_heads,
+                num_blocks=r.num_blocks, dropout=r.dropout)
         elif r.kind == "similarity_topb":
             self.readout = SimilarityTopBReadout(self.cache_hidden, self.d_gen)
         else:
@@ -714,6 +720,9 @@ class QuROModel(nn.Module):
 
     def save(self, path, optimizer=None, scheduler=None, step=None):
         trainable = {name for name, p in self.lm.named_parameters() if p.requires_grad}
+        # A residual run can freeze an already-trained P decoder. Those weights
+        # differ from the published model and must survive save/reload too.
+        trainable |= set(getattr(self, "baseline_decoder_names", []))
         payload = {
             "format_version": 2,
             "state_dict": self.trainable_state_dict(),
@@ -722,6 +731,8 @@ class QuROModel(nn.Module):
                                     if name in trainable},
             "config": asdict(self.cfg),
             "step": step,
+            "baseline_initialization": getattr(self, "baseline_initialization", None),
+            "baseline_decoder_names": sorted(getattr(self, "baseline_decoder_names", [])),
         }
         # The frozen query adapter is not trainable, so the filter above drops it
         # -- and it cannot be reconstructed from the checkpoint path alone: with
@@ -792,6 +803,8 @@ class QuROModel(nn.Module):
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)
         self._restore_query_adapter(ckpt)
+        self.baseline_initialization = ckpt.get("baseline_initialization")
+        self.baseline_decoder_names = ckpt.get("baseline_decoder_names", [])
         if optimizer is not None and "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
         if scheduler is not None and "scheduler" in ckpt:
