@@ -87,6 +87,15 @@ REGISTRY = [
     ("gonogo_P_D0", "triviaqa", "trivia", "qdrop0"),
     ("d1_C_full", "triviaqa", "trivia", "qdrop1.0"),
     ("d1_A_full", "triviaqa", "trivia", "qdrop1.0"),
+    # Residual wave.  Every one of these starts from hp2d0_P's trained decoder
+    # and keeps all 80 cached latents, so B=80 is "no truncation", not a budget
+    # point on the sweep above.  p-control is P given the same extra training
+    # budget as joint; without it a joint gain cannot be told apart from simply
+    # training the baseline longer.
+    ("residual_init_s42", "hotpotqa", "dev", "residual/B80/from_P"),
+    ("residual_train_s42", "hotpotqa", "dev", "residual/B80/from_P"),
+    ("residual_joint_s42", "hotpotqa", "dev", "residual/B80/from_P"),
+    ("residual_p-control_s42", "hotpotqa", "dev", "residual/B80/from_P"),
 ]
 
 # Comparisons worth a paired test, as (dataset, setting, mode, arm_a, arm_b).
@@ -119,11 +128,22 @@ PAIRED = [
     ("hotpotqa", "fixedq/B8", "D0", "r2c_C1", "r2a_C1"),
     ("hotpotqa", "fixedq/B8", "D0", "r2d_S", "r0S_S"),
     ("hotpotqa", "fixedq/B8", "D0", "r2b_C1", "r2d_S"),
+    # Residual: does starting from P and learning a correction beat P?  init is
+    # the implementation check -- it must come out at exactly zero.  The last
+    # row is the only fair one for the joint arm, because both sides paid the
+    # same 3000 extra steps.
+    ("hotpotqa", "residual/B80/from_P", "D0", "residual_init_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/from_P", "D0", "residual_train_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/from_P", "D0", "residual_joint_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/from_P", "D0", "residual_p-control_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/from_P", "D0", "residual_joint_s42", "residual_p-control_s42"),
 ]
 
 # Runs whose budget is not 8; used to line up predictions files and to label the
 # curve.  Anything absent is B=8.
-BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0": 32}
+BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0": 32,
+           "residual_init_s42": 80, "residual_train_s42": 80,
+           "residual_joint_s42": 80, "residual_p-control_s42": 80}
 # Runs whose decoder reads something other than D0.  Recorded rather than derived
 # so a D4 run can never be pooled with a D0 one on a matching metric name.
 DECODER_MODES = {"q4_C1": "D4", "q4kd_C1": "D4", "q5_C1": "D5", "q5kd_C1": "D5"}

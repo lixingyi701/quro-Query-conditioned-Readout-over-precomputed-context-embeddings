@@ -1,6 +1,6 @@
 {
-  "commit": "60307df9714b20d770f95ae285f6c1a5ccdc45b0",
-  "generated": "2026-09-17T12:33:13+00:00",
+  "commit": "bc282b208d1a3be1a23c23c80d46f5d4942425d6",
+  "generated": "2026-09-18T14:47:33+00:00",
   "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
   "paired_tests": [
     {
@@ -529,6 +529,116 @@
         "losses": 129,
         "p": 3.299437404897412e-14,
         "wins": 282
+      }
+    },
+    {
+      "a": "residual_init_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.0,
+        "losses": 0,
+        "p": 1.0,
+        "wins": 0
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/from_P",
+      "substring": {
+        "delta": 0.0,
+        "losses": 0,
+        "p": 1.0,
+        "wins": 0
+      }
+    },
+    {
+      "a": "residual_train_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.15,
+        "losses": 31,
+        "p": 0.7948436539828609,
+        "wins": 28
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/from_P",
+      "substring": {
+        "delta": 0.1,
+        "losses": 29,
+        "p": 0.8974218269914305,
+        "wins": 31
+      }
+    },
+    {
+      "a": "residual_joint_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -1.7,
+        "losses": 129,
+        "p": 0.02723767481598047,
+        "wins": 95
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/from_P",
+      "substring": {
+        "delta": -1.3,
+        "losses": 115,
+        "p": 0.07980304693737997,
+        "wins": 89
+      }
+    },
+    {
+      "a": "residual_p-control_s42",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -1.6,
+        "losses": 135,
+        "p": 0.04426431105091176,
+        "wins": 103
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/from_P",
+      "substring": {
+        "delta": -1.65,
+        "losses": 125,
+        "p": 0.029598278618704725,
+        "wins": 92
+      }
+    },
+    {
+      "a": "residual_joint_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_p-control_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.1,
+        "losses": 85,
+        "p": 0.9385334053887997,
+        "wins": 83
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/from_P",
+      "substring": {
+        "delta": 0.35,
+        "losses": 81,
+        "p": 0.6445422120603311,
+        "wins": 88
       }
     }
   ],
@@ -2040,6 +2150,118 @@
       "setting": "fixedq/B8/kd0.5",
       "split": "dev",
       "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "residual_init_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.545,
+            "f1": 0.6821782908125013,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.598,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/from_P",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_joint_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.528,
+            "f1": 0.6679584124011521,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.585,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/from_P",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_p-control_s42": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.529,
+            "f1": 0.6672567984432146,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.5815,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "residual/B80/from_P",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_train_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5435,
+            "f1": 0.6789382387349492,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.599,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/from_P",
+      "split": "dev",
+      "teacher_logits": null
     },
     "sfix_S": {
       "arm": "S",
