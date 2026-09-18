@@ -1,5 +1,7 @@
 # 交接状态（截至 2026-09-17）
 
+> **2026-09-18 最新执行优先级：**先读 [残差方向讨论与交接](RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md) 和 [运行说明](PISCO_RESIDUAL_EXPERIMENT.md)。用户已确定：从实际 P checkpoint 出发，保留全部 latent，用零初始化 query 条件残差先验证平齐、再争取提点；首轮 CE-only，不以 KL 修复、D4/D5、错配文档或大规模消融作为启动前置。下文是历史快照，其中“KD 收益只经过 readout”“system prompt 免费”等表述未获充分证实，不沿用为成果；下一步顺序以最新交接为准。
+
 > **2026-09-17 训练方案复审：** 下一步实施前请读 [TRAINING_STRATEGY_REVIEW_AND_PLAN.md](TRAINING_STRATEGY_REVIEW_AND_PLAN.md)。它收窄了本文“预算已排除、只剩两个原因、分支干预可决定损失位置”的表述，并提出固定 query 表示、分组优化、CE/KL/证据覆盖的受控实验矩阵。下文历史分析保留；该新文档是待验证建议，不是已运行结果。
 
 新会话从这里开始。本文合并了原先的 HANDOFF 与 `warning_and_target.md`——后者的实施要求已有 W1/W2/W4/W5 完成，留着两份只会让人读到作废的结论。**结果不在本文。**臂定义与预算曲线见 [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md)；

@@ -4,6 +4,8 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md`](RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md) | **最新优先阅读**：用户确定的残差方向、讨论结论、下一步执行顺序 |
+| [`PISCO_RESIDUAL_EXPERIMENT.md`](PISCO_RESIDUAL_EXPERIMENT.md) | 已实现的 R 臂、从实际 P checkpoint 起步、恒等验证与训练命令 |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
 | [`QURO_V0.1_IMPLEMENTATION_PLAN.md`](QURO_V0.1_IMPLEMENTATION_PLAN.md) | v0.1 实施方案 + §10.5–§10.8 实施过程中的全部实测发现 |
 | [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) | **v0.2 实验结果与分析**（主文档）：ξ_off 扫描、D1 实验、定位讨论 |
@@ -13,11 +15,11 @@
 
 原始实验数据在 [`../results/`](../results/)。
 
-## 当前状态（2026-09-16）
+## 当前状态（2026-09-18）
 
-- **机制已证实**：D1 下 query 条件读出比 query 无关版高 20.85 个 EM 点（p=1.8e-96）
-- **但在标准设定下冗余**：D0 下 decoder 拿着问题明文，自己就完成证据匹配
-- **定位待重建**：见 `QURO_V0.2_RESULTS_AND_ANALYSIS.md` §8
-- **主表一格未填**：同压缩率基线、多数据集、效率曲线全部待做
-- **长期约束**：v0.3 之前不微调压缩器（理由见 `QURO_V0.2_RESULTS_AND_ANALYSIS.md` §9）
-- **新颖性**：与 RRK(2604.26483) 的切割成立——它输出标量做重排，我们输出喂给生成器的 soft token；RRK 笔记 §9.2 自承未把 query 条件读出作为通用生成问题隔离研究
+- **已观察到**：单 seed HotpotQA dev、固定 query 表示、B=8，C1 43.10 EM > S 37.50；P 为 54.50。结果支持继续研发，不证明全部机制或部署价值。
+- **用户确定的主线**：先从 P 的全部原始 latent 开始，用 query 条件化残差争取质量提点，再谈预算缩减和消融。
+- **代码已实现**：R 臂零初始化时保留 P 输入，加载实际训练过的 P decoder；CPU 契约验证通过，真实 7B/Hotpot 实验待服务器运行。
+- **当前暂停**：问题压缩 D4/D5、删 system prompt、KD 扫参和忠实性解释；KL 修复不是本轮 CE-only 的前置依赖。
+- **长期约束保留**：本轮冻结离线压缩器，复用已有缓存。
+- 历史报告保留供追溯，不将过时摘要或尚未成立的机制论断当成最新执行要求。具体任务见顶部最新交接。
