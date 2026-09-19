@@ -1,6 +1,6 @@
 {
-  "commit": "bc282b208d1a3be1a23c23c80d46f5d4942425d6",
-  "generated": "2026-09-18T14:47:33+00:00",
+  "commit": "2428f8a6603bcaa5bd33c29420d7ca335f08ccc3",
+  "generated": "2026-09-19T07:12:08+00:00",
   "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
   "paired_tests": [
     {
@@ -639,6 +639,226 @@
         "losses": 81,
         "p": 0.6445422120603311,
         "wins": 88
+      }
+    },
+    {
+      "a": "residual_ext_joint_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 1.1,
+        "losses": 63,
+        "p": 0.08396661724393041,
+        "wins": 85
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 1.25,
+        "losses": 60,
+        "p": 0.04587706851008287,
+        "wins": 85
+      }
+    },
+    {
+      "a": "residual_ext_joint_s43",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s43",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.1,
+        "losses": 70,
+        "p": 0.9331607923848083,
+        "wins": 72
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 0.5,
+        "losses": 62,
+        "p": 0.4369905490859722,
+        "wins": 72
+      }
+    },
+    {
+      "a": "residual_ext_joint_s44",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s44",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 1.0,
+        "losses": 63,
+        "p": 0.11553971025192666,
+        "wins": 83
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 0.75,
+        "losses": 61,
+        "p": 0.23153716588439505,
+        "wins": 76
+      }
+    },
+    {
+      "a": "residual_ext_joint_9k_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_9k_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.05,
+        "losses": 89,
+        "p": 1.0,
+        "wins": 88
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/9k",
+      "substring": {
+        "delta": 0.2,
+        "losses": 80,
+        "p": 0.8148707813473874,
+        "wins": 84
+      }
+    },
+    {
+      "a": "residual_ext_joint_s42",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 2.85,
+        "losses": 96,
+        "p": 0.0003668037349338306,
+        "wins": 153
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 2.15,
+        "losses": 97,
+        "p": 0.0062486022606727245,
+        "wins": 140
+      }
+    },
+    {
+      "a": "residual_ext_p-control_s42",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 1.75,
+        "losses": 106,
+        "p": 0.030305826980676125,
+        "wins": 141
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 0.9,
+        "losses": 107,
+        "p": 0.2643360364060425,
+        "wins": 125
+      }
+    },
+    {
+      "a": "residual_ext_p-control_s42",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "residual_p-control_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 3.35,
+        "losses": 119,
+        "p": 0.00014877801098793367,
+        "wins": 186
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 2.55,
+        "losses": 114,
+        "p": 0.0026942931730256523,
+        "wins": 165
+      }
+    },
+    {
+      "a": "residual_ext_train_s42",
+      "arm_a": "R",
+      "arm_b": "R",
+      "b": "residual_train_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.65,
+        "losses": 42,
+        "p": 0.22287765458337627,
+        "wins": 55
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/3k",
+      "substring": {
+        "delta": 0.05,
+        "losses": 47,
+        "p": 1.0,
+        "wins": 48
+      }
+    },
+    {
+      "a": "residual_ext_joint_9k_s42",
+      "arm_a": "R",
+      "arm_b": "R",
+      "b": "residual_ext_joint_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -1.3,
+        "losses": 130,
+        "p": 0.10199143403277038,
+        "wins": 104
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/9k",
+      "substring": {
+        "delta": -0.05,
+        "losses": 108,
+        "p": 1.0,
+        "wins": 107
+      }
+    },
+    {
+      "a": "residual_ext_p-control_9k_s42",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.15,
+        "losses": 135,
+        "p": 0.9026137740803217,
+        "wins": 132
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "residual/B80/heldout/9k",
+      "substring": {
+        "delta": 1.0,
+        "losses": 112,
+        "p": 0.22377628757372944,
+        "wins": 132
       }
     }
   ],
@@ -2150,6 +2370,286 @@
       "setting": "fixedq/B8/kd0.5",
       "split": "dev",
       "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "residual_ext_init_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.545,
+            "f1": 0.6821782908125013,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.598,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_joint_9k_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5605,
+            "f1": 0.7005501840995263,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.619,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/9k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_joint_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5735,
+            "f1": 0.7011667995260099,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.6195,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_joint_s43": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.554,
+            "f1": 0.6899739932582037,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.608,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_joint_s44": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.555,
+            "f1": 0.6886242993790976,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.603,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_p-control_9k_s42": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.561,
+            "f1": 0.6960936091686085,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.617,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "residual/B80/heldout/9k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_p-control_s42": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5625,
+            "f1": 0.6921013473454648,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.607,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_p-control_s43": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.553,
+            "f1": 0.6845867749209853,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.603,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_p-control_s44": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.545,
+            "f1": 0.6786656288886552,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.5955,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_train_s42": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.55,
+            "f1": 0.6841059321526426,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.5995,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "residual/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
     },
     "residual_init_s42": {
       "arm": "R",

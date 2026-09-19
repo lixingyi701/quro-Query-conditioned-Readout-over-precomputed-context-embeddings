@@ -22,6 +22,16 @@ case "$stage" in
   p-control) flags=(--arm P --generator_lora_init pisco) ;;
   *) echo "unknown stage: $stage" >&2; exit 1 ;;
 esac
+# Training data is the one variable the residual results left open, so it is
+# overridable while everything else still comes from the P run's config.  The
+# eval files are deliberately NOT overridable: dev is the anchor every historical
+# number is read against.  A CACHE_DIR must be a superset of the baseline's, or
+# the same dev documents come back as different latents and the comparison to
+# 54.50 is no longer a comparison.
+data_flags=()
+[ -n "${TRAIN_FILE:-}" ] && data_flags+=(--train_file "$TRAIN_FILE")
+[ -n "${CACHE_DIR:-}" ] && data_flags+=(--cache_dir "$CACHE_DIR")
+[ ${#data_flags[@]} -gt 0 ] && data_flags+=(--allow_data_change)
 mkdir -p "$out"
 git rev-parse HEAD > "$out/commit.txt"
 git diff HEAD > "$out/worktree.diff"
@@ -34,5 +44,5 @@ python -m src.train \
   --d_readout "${D_READOUT:-256}" --readout_blocks 1 \
   --steps "${STEPS:-3000}" --lr "${LR:-0.0001}" \
   --eval_every 500 --eval_every_samples 500 --select_metric em \
-  --eval_max_samples 2000 "${flags[@]}" \
+  --eval_max_samples 2000 "${flags[@]}" "${data_flags[@]+"${data_flags[@]}"}" \
   2>&1 | tee "$out/console.log"

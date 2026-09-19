@@ -9,11 +9,47 @@ The answer CE trains the correction; there is no target residual and no KD.
 
 from __future__ import annotations
 
+import json
+import os
+
 import torch
 from torch import nn
 
 from .baselines import _flatten, PiscoDirectReadout
 from .perceiver import AttentionBlock
+
+# Settings that decide whether two caches hold the same kind of vector. A latent
+# produced by a different compressor, rate or dtype is not a drop-in for P's, and
+# loading P's decoder on top of it compares nothing.
+_CACHE_PROTOCOL = ("compressor", "latent_size", "hidden_size", "dtype",
+                   "compr_rate", "doc_max_length", "checkpoint")
+
+
+def _check_cache_compatible(baseline_dir, run_dir):
+    """A replacement cache must encode the same way and cover the same documents.
+
+    Equal ``cache_dir`` strings used to stand in for this. The string is neither
+    necessary nor sufficient: a rebuilt cache at a new path can be a valid
+    superset, and the same path can be repacked with a different compressor.
+    """
+    manifests = {}
+    for role, path in (("baseline", baseline_dir), ("run", run_dir)):
+        manifest_path = os.path.join(str(path), "manifest.json")
+        if not os.path.exists(manifest_path):
+            raise ValueError(
+                f"cannot verify the {role} cache: {manifest_path} is missing")
+        with open(manifest_path, encoding="utf-8") as f:
+            manifests[role] = json.load(f)
+    for field in _CACHE_PROTOCOL:
+        was, now = manifests["baseline"].get(field), manifests["run"].get(field)
+        if was != now:
+            raise ValueError(
+                f"replacement cache encodes differently: {field} {was!r} -> {now!r}")
+    missing = set(manifests["baseline"]["documents"]) - set(manifests["run"]["documents"])
+    if missing:
+        raise ValueError(
+            f"replacement cache is not a superset of the baseline's: "
+            f"{len(missing)} documents absent, e.g. {sorted(missing)[:3]}")
 
 
 class PiscoResidualReadout(nn.Module):
@@ -69,12 +105,20 @@ class PiscoResidualReadout(nn.Module):
                              "refinement_rms": delta.detach().square().mean().sqrt()}
 
 
-def initialize_from_pisco(model, checkpoint):
+def initialize_from_pisco(model, checkpoint, allow_data_change=False):
     """Load only the P decoder and query weights, never its optimiser/step.
 
     The caller must inherit the source config. A generic non-strict model.load
     would hide an incompatible readout and could leave the query adapter copied
     from the published decoder rather than the actual trained P checkpoint.
+
+    ``cache_dir`` and ``train_file`` are the exception: which rows the new arm
+    trains on is an experimental variable, not a property of the weights being
+    loaded, and the residual results made it the next variable worth moving.
+    They still may not move silently -- ``allow_data_change`` has to be asked
+    for, the deviation is recorded in ``baseline_initialization``, and a new
+    cache is checked for compressor compatibility, which is the substantive
+    thing the blanket equality was standing in for.
     """
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     source = payload["config"]
@@ -82,13 +126,28 @@ def initialize_from_pisco(model, checkpoint):
         raise ValueError("baseline checkpoint must use pisco_direct")
     if source["decoder"]["input_mode"] != "D0":
         raise ValueError("baseline checkpoint must use D0")
+    # These change tensor shapes or the backbone itself, so they are never an
+    # experimental variable for an arm that loads P's weights.
     for section, fields in {
         "generator": ("kind", "name_or_path", "n_mem_tokens", "toy_d_model", "toy_n_layer"),
-        "data": ("cache_dir", "train_file", "max_docs", "max_query_len", "max_answer_len"),
+        "data": ("max_docs", "max_query_len", "max_answer_len"),
     }.items():
         for field in fields:
             if field in source[section] and source[section][field] != getattr(getattr(model.cfg, section), field):
                 raise ValueError(f"baseline protocol mismatch: {section}.{field}")
+    deviation = {}
+    for field in ("cache_dir", "train_file"):
+        was, now = source["data"].get(field), getattr(model.cfg.data, field)
+        if field in source["data"] and was != now:
+            if not allow_data_change:
+                raise ValueError(
+                    f"baseline protocol mismatch: data.{field} "
+                    f"({was!r} -> {now!r}); pass --allow_data_change to make the "
+                    f"training data the variable, and say so when reporting")
+            deviation[field] = {"baseline": was, "run": now}
+    if "cache_dir" in deviation:
+        _check_cache_compatible(deviation["cache_dir"]["baseline"],
+                                deviation["cache_dir"]["run"])
     state = payload.get("generator_trainable", {})
     if not state:
         raise ValueError("baseline checkpoint has no saved decoder weights")
@@ -129,6 +188,8 @@ def initialize_from_pisco(model, checkpoint):
                   if n.startswith("query_encoder.")}
         model.query_encoder.load_state_dict(qstate, strict=True)
     model.baseline_initialization = {"checkpoint": str(checkpoint), "step": payload.get("step")}
+    if deviation:
+        model.baseline_initialization["data_deviation"] = deviation
     return model.baseline_initialization
 
 

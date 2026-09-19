@@ -96,6 +96,20 @@ REGISTRY = [
     ("residual_train_s42", "hotpotqa", "dev", "residual/B80/from_P"),
     ("residual_joint_s42", "hotpotqa", "dev", "residual/B80/from_P"),
     ("residual_p-control_s42", "hotpotqa", "dev", "residual/B80/from_P"),
+    # Held-out wave.  Same arms, same frozen P decoder, but trained on the 60447
+    # HotpotQA rows the P baseline never saw.  The setting label carries the step
+    # count because the module's margin does not survive a change of it: a 3k row
+    # and a 9k row are not interchangeable and must never be pooled.
+    ("residual_ext_init_s42", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_train_s42", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_joint_s42", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_p-control_s42", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_joint_s43", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_p-control_s43", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_joint_s44", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_p-control_s44", "hotpotqa", "dev", "residual/B80/heldout/3k"),
+    ("residual_ext_joint_9k_s42", "hotpotqa", "dev", "residual/B80/heldout/9k"),
+    ("residual_ext_p-control_9k_s42", "hotpotqa", "dev", "residual/B80/heldout/9k"),
 ]
 
 # Comparisons worth a paired test, as (dataset, setting, mode, arm_a, arm_b).
@@ -137,13 +151,37 @@ PAIRED = [
     ("hotpotqa", "residual/B80/from_P", "D0", "residual_joint_s42", "hp2d0_P"),
     ("hotpotqa", "residual/B80/from_P", "D0", "residual_p-control_s42", "hp2d0_P"),
     ("hotpotqa", "residual/B80/from_P", "D0", "residual_joint_s42", "residual_p-control_s42"),
+    # The module verdict on held-out data, once per seed.  Everything but the
+    # 4.09M residual branch is matched, so this row is what "does R contribute"
+    # means.  Three seeds are reported because one is not a result: the margin is
+    # +1.10 / +0.10 / +1.00, all positive, none significant on its own.
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_joint_s42", "residual_ext_p-control_s42"),
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_joint_s43", "residual_ext_p-control_s43"),
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_joint_s44", "residual_ext_p-control_s44"),
+    # The same verdict at 9000 steps, where it disappears.
+    ("hotpotqa", "residual/B80/heldout/9k", "D0", "residual_ext_joint_9k_s42", "residual_ext_p-control_9k_s42"),
+    # Fresh data against the P baseline, and against the same arm on exhausted
+    # data -- the pair that decided H1.
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_joint_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_p-control_s42", "hp2d0_P"),
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_p-control_s42", "residual_p-control_s42"),
+    ("hotpotqa", "residual/B80/heldout/3k", "D0", "residual_ext_train_s42", "residual_train_s42"),
+    # Does longer training move either arm?
+    ("hotpotqa", "residual/B80/heldout/9k", "D0", "residual_ext_joint_9k_s42", "residual_ext_joint_s42"),
+    ("hotpotqa", "residual/B80/heldout/9k", "D0", "residual_ext_p-control_9k_s42", "residual_ext_p-control_s42"),
 ]
 
 # Runs whose budget is not 8; used to line up predictions files and to label the
 # curve.  Anything absent is B=8.
 BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0": 32,
            "residual_init_s42": 80, "residual_train_s42": 80,
-           "residual_joint_s42": 80, "residual_p-control_s42": 80}
+           "residual_joint_s42": 80, "residual_p-control_s42": 80,
+           **{tag: 80 for tag in (
+               "residual_ext_init_s42", "residual_ext_train_s42",
+               "residual_ext_joint_s42", "residual_ext_p-control_s42",
+               "residual_ext_joint_s43", "residual_ext_p-control_s43",
+               "residual_ext_joint_s44", "residual_ext_p-control_s44",
+               "residual_ext_joint_9k_s42", "residual_ext_p-control_9k_s42")}}
 # Runs whose decoder reads something other than D0.  Recorded rather than derived
 # so a D4 run can never be pooled with a D0 one on a matching metric name.
 DECODER_MODES = {"q4_C1": "D4", "q4kd_C1": "D4", "q5_C1": "D5", "q5kd_C1": "D5"}

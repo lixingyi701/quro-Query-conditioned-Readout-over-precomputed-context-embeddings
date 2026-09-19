@@ -116,6 +116,85 @@ class ResidualContracts(unittest.TestCase):
             self.assertTrue(torch.equal(trained['answer_logits'], actual['answer_logits']))
             self.assertEqual(restored.baseline_initialization['step'], 1)
 
+    def test_training_data_moves_only_when_asked_and_is_recorded(self):
+        """Which rows R trains on is a variable; it may not move silently.
+
+        The residual results put the training data next in line, so the guard
+        has to let it move -- but a run whose comparison to P's 54.50 rests on
+        an unrecorded data swap is worth nothing, and a cache that encodes
+        differently is not a replacement at all.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            cache_dir, train_path, _, m, h = build_workspace(root)
+            cfg = get_config('toy')
+            cfg.train.out_dir = root
+            cfg.data.train_file = train_path
+            cfg.data.cache_dir = cache_dir
+            cfg.data.max_docs = 2
+            cfg.readout.cache_hidden = h
+            cfg.readout.d_readout = 32
+            cfg.decoder.query_text_dropout = 0
+            apply_arm(cfg, 'P')
+            torch.manual_seed(3)
+            _, p = build_model(cfg, cache_hidden=h)
+            source = os.path.join(root, 'p.pt')
+            p.save(source, step=1)
+
+            def fresh(train_file, cache):
+                rcfg = copy.deepcopy(cfg)
+                apply_arm(rcfg, 'R')
+                rcfg.generator.lora_init = 'frozen'
+                rcfg.data.train_file = train_file
+                rcfg.data.cache_dir = cache
+                rcfg.revalidate()
+                torch.manual_seed(99)
+                return rcfg, build_model(rcfg, cache_hidden=h)[1]
+
+            # Same rows at a different path: the toy tokenizer derives its vocab
+            # from the training file, and a different vocab would fail the
+            # decoder shape check before the data guard was ever reached.
+            other_train = os.path.join(root, 'held_out.jsonl')
+            with open(train_path, encoding='utf-8') as src, \
+                    open(other_train, 'w', encoding='utf-8') as dst:
+                dst.write(src.read())
+
+            # Silence is the failure mode: without the flag, a moved train file stops the run.
+            _, r = fresh(other_train, cache_dir)
+            with self.assertRaises(ValueError):
+                initialize_from_pisco(r, source)
+            # Asked for explicitly, it proceeds and says what it changed.
+            _, r = fresh(other_train, cache_dir)
+            record = initialize_from_pisco(r, source, allow_data_change=True)
+            self.assertEqual(record['data_deviation']['train_file']['run'], other_train)
+            self.assertNotIn('cache_dir', record['data_deviation'])
+
+            # A replacement cache must cover the baseline's documents ...
+            import json as _json
+
+            def write_manifest(directory, manifest):
+                os.makedirs(directory)
+                with open(os.path.join(directory, 'manifest.json'), 'w', encoding='utf-8') as f:
+                    _json.dump(manifest, f)
+
+            with open(os.path.join(cache_dir, 'manifest.json'), encoding='utf-8') as f:
+                manifest = _json.load(f)
+            short = os.path.join(root, 'short-cache')
+            dropped = dict(manifest)
+            dropped['documents'] = {k: v for k, v in list(manifest['documents'].items())[1:]}
+            write_manifest(short, dropped)
+            _, r = fresh(train_path, short)
+            with self.assertRaisesRegex(ValueError, 'superset'):
+                initialize_from_pisco(r, source, allow_data_change=True)
+
+            # ... and encode them the same way.
+            recoded = os.path.join(root, 'recoded-cache')
+            changed = dict(manifest)
+            changed['compr_rate'] = (manifest.get('compr_rate') or 0) + 1
+            write_manifest(recoded, changed)
+            _, r = fresh(train_path, recoded)
+            with self.assertRaisesRegex(ValueError, 'encodes differently'):
+                initialize_from_pisco(r, source, allow_data_change=True)
+
 
 if __name__ == '__main__':
     torch.set_num_threads(1)

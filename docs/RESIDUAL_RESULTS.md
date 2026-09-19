@@ -1,161 +1,200 @@
 # 残差臂 R：从已训练 P 出发的恒等初始化修正
 
-> 日期：2026-09-18
-> 数据：[`results/arm_matrix.json`](../results/arm_matrix.json)（41 次运行、29 组配对检验）
+> 日期：2026-09-19（2026-09-18 首版，第 2 节结论已按新证据修订）
+> 数据：[`results/arm_matrix.json`](../results/arm_matrix.json)（51 次运行、39 组配对检验）
 > 生成：`python scripts/collect_arm_matrix.py`
-> 范围：HotpotQA dev 2000 条，D0，B=80（全部缓存 latent，不截断），3000 步，seed 42。**全部单 seed。**
-> 实现：分支 `feat/pisco-identity-residual`，方案见 [`PISCO_RESIDUAL_EXPERIMENT.md`](PISCO_RESIDUAL_EXPERIMENT.md)、[`RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md`](RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md)
+> 范围：HotpotQA dev 2000 条，D0，B=80（全部缓存 latent，不截断）。
+> 实现：分支 `feat/pisco-identity-residual`，方案见 [`PISCO_RESIDUAL_EXPERIMENT.md`](PISCO_RESIDUAL_EXPERIMENT.md)
 
-本轮要回答的是交接文档定下的首要问题：**从实际 P baseline 出发，学一个修正，能不能超过 P。**
-答案是不能。以下是四次运行的完整记录。
+本文记录两轮实验。第一轮在 P 已训练过的 30000 条上，结论是零收益；第二轮换到 P 从未见过的 60447 条上，结论改变。**第二轮同时修正了第一轮对自身结果的解释**，两轮都完整保留。
 
 ---
 
 ## 0. 三十秒版本
 
-1. **恒等起点精确成立。**`Delta=0` 时 R 与 P 在 dev 2000 条上**逐题 2000/2000 完全相同**，EM/F1/substring 三项全等。实现无误。
-2. **训练后没有收益。**R（冻结 decoder）54.35 vs P 54.50，**p=0.79，与 P 无法区分**。全程只改变 59/2000 道题的预测，赢 28 负 31。
-3. **联合适配下残差模块贡献为零。**算力匹配的 joint vs p-control：−0.10 EM，p=0.94。这是本轮唯一公平的对照，结果是彻底的零。
-4. **最有信息量的是 p-control：继续训练本身有害。**什么模块都不加，只把 P 的 decoder LoRA 在同一批数据上再训 3000 步，EM 掉 1.60（p=0.044）。joint 掉 1.70（p=0.027）。
-5. **所以瓶颈不在 R，在数据配方。**P 已在这 30000 条上训到收敛，继续训是在拟合噪声。R 在冻结设定下能打平，是因为冻结保护了它。
-6. **「冻结限制太大、要解冻给优化空间」这条假设被否掉了**——解冻带来的是退化，不是空间。
+1. **恒等起点精确成立**，两轮都验过：`Delta=0` 时 R 与 P 逐题 2000/2000 完全相同。
+2. **第一轮（P 训练过的数据）：全盘零收益。**R 打平（−0.15，p=0.79），算力匹配的 joint vs p-control 是 −0.10（p=0.94）。
+3. **第一轮的真正发现是 p-control：**继续训练 P 的 decoder LoRA 掉 1.60 分（p=0.044）。当时的结论写作"继续训练本身有害"。
+4. **第二轮证明那个结论少了限定词。**换成 P 没见过的 60447 条，同一个 p-control 变成 **+1.75（p=0.030）**。摆动 +3.35（p=0.00015）。**有害的不是继续训练，是在已拟合的数据上继续训练。**
+5. **模块的贡献方向一致但未确立。**3000 步下三个 seed 的 joint − p-control 为 +1.10 / +0.10 / +1.00，均值 **+0.73 ± 0.55**，3/3 为正，但没有一个 seed 单独显著，n=3 的符号检验上限就是 p=0.25。
+6. **这个边际在 9000 步消失。**同一 seed 下 joint 56.05 vs p-control 56.10，−0.05，+88/−89，**p=1.00**。
+7. **最好的单个成绩是 seed 42 的 joint@3k = 57.35**（对 P +2.85，p=0.00037），但三 seed 均值只有 56.08（+1.58）。**57.35 不能作为方法的代表值。**
 
 ---
 
-## 1. 四次运行
+## 1. 两轮的运行
 
-| 运行 | 阶段 | readout | decoder LoRA | 可训参数 |
-|---|---|---|---|---:|
-| `residual_init_s42` | 步骤 B | 4.09M `pisco_residual` | 冻结 | 0（`--eval_only`） |
-| `residual_train_s42` | 步骤 C | 4.09M `pisco_residual` | **冻结** | 4.09M |
-| `residual_joint_s42` | 步骤 D | 4.09M `pisco_residual` | 41.94M | 46.03M |
-| `residual_p-control_s42` | 步骤 D 对照 | 0（`pisco_direct`） | 41.94M | 41.94M |
+四个臂在两轮里定义相同，都从 `hp2d0_P/checkpoint_last.pt` 加载同一个已训练 decoder：
+
+| 臂 | readout | decoder LoRA | 可训参数 |
+|---|---|---|---:|
+| `init` | 4.09M `pisco_residual` | 冻结 | 0（`--eval_only`） |
+| `train`（R 冻结） | 4.09M `pisco_residual` | **冻结** | 4.09M |
+| `joint` | 4.09M `pisco_residual` | 41.94M | 46.03M |
+| `p-control` | 0（`pisco_direct`） | 41.94M | 41.94M |
+
+**`joint` 与 `p-control` 只差那 4.09M 残差模块**，其余（数据、步数、lr、seed、LoRA 预算、query adapter）全部匹配。这一对是本文里唯一能把收益归因给 R 的比较。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh init
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh train
-CUDA_VISIBLE_DEVICES=1 bash scripts/run_pisco_residual.sh joint
-CUDA_VISIBLE_DEVICES=2 bash scripts/run_pisco_residual.sh p-control
+# 第一轮：P 训练过的 30000 条
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh {init,train,joint,p-control}
+
+# 第二轮：P 没见过的 60447 条
+TRAIN_FILE=/data02/quro/data/hotpot_full/train_heldout.jsonl \
+CACHE_DIR=/data02/quro/cache/hotpotfull-pisco-r16 \
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh joint
 ```
 
-四者都从 `/data02/quro/runs/hp2d0_P/checkpoint_last.pt` 加载同一个已训练 decoder，共用源运行的数据、缓存、tokenizer 和生成配置，query adapter hash 全部为 `17fc60e8afb48424`。
+数据来源见 [`TRAINING_DATA_REDESIGN.md`](TRAINING_DATA_REDESIGN.md)：HotpotQA 原始 train 90447 条，P 用掉 30000，留出 60447。dev 2000 与 test 5405 **两轮完全未动**，`dev.jsonl` 字节级一致（md5 `cb0f1db0…`）。
 
-**`joint` 与 `p-control` 只差那 4.09M 残差模块**：同样 41.94M 的 decoder LoRA 预算、同样 3000 步、同样 lr 1e-4、同样 seed。这是本轮设计里唯一能把收益归因给 R 的那一组。
+第二轮换了缓存（509315 篇，覆盖全量语料）。换缓存不是免费的，所以做了两道检查：
+
+- `--allow_data_change` 强制显式声明，偏差写进 checkpoint 的 `baseline_initialization.data_deviation`，不能静默替换；新缓存必须编码方式相同且是旧缓存的超集（`src/refinement.py:_check_cache_compatible`）。
+- 端到端复核：新缓存下 `init` 评测为 **EM 54.50 / F1 0.682 / sub 59.80**，与旧缓存、与 P 源运行**逐题 2000/2000 完全相同**。
+
+> 抽查 3400 篇 dev 文档，1 篇的 latent 与旧缓存不同（max-abs 0.25，可复现，源于 fp16 下批次组成改变）。它对 2000 条的预测没有任何影响，但这条记录保留，不声称两份缓存逐位相同。
 
 ---
 
-## 2. 恒等复现（步骤 B）
+## 2. 第一轮：P 训练过的数据上，全盘零收益
 
-```
-[baseline identity] {'identity': True, 'ce': 0.003759278915822506, 'tokens_per_row': [80, 80]}
-[eval] dev|D0|B=80: EM=54.50% F1=0.682 sub=59.80% prefill=156 tok
-```
-
-| | EM | F1 | substring |
-|---|---:|---:|---:|
-| `hp2d0_P`（源） | 54.50 | 0.6822 | 59.80 |
-| `residual_init_s42` | 54.50 | 0.6822 | 59.80 |
-
-逐题比对：**2000/2000 预测字符串完全一致**，配对检验 net 0（+0/−0）。
-
-小批恒等检查（2 条样本上 latent、mask、logits、CE 逐项相同）与完整 dev 复现两者都做了，后者才是真正的证据。
-
----
-
-## 3. 主结果
-
-| 运行 | 臂 | EM | F1 | substring | vs P（EM） | 配对检验 |
+| 运行 | 臂 | EM | F1 | sub | vs P | 配对检验 |
 |---|---|---:|---:|---:|---:|---|
 | `hp2d0_P` | P | **54.50** | 0.6822 | 59.80 | — | — |
 | `residual_init_s42` | R (Δ=0) | 54.50 | 0.6822 | 59.80 | +0.00 | 2000/2000 相同 |
-| `residual_train_s42` | R | 54.35 | 0.6789 | 59.90 | −0.15 | +28/−31，**p=0.79** |
+| `residual_train_s42` | R | 54.35 | 0.6789 | 59.90 | −0.15 | +28/−31，p=0.79 |
 | `residual_joint_s42` | R | 52.80 | 0.6680 | 58.50 | −1.70 | +95/−129，p=0.027 |
 | `residual_p-control_s42` | P | 52.90 | 0.6673 | 58.15 | −1.60 | +103/−135，p=0.044 |
 
-**关键对照：**
+**模块判决：joint vs p-control = −0.10，+83/−85，p=0.94。**彻底的零。
 
-| 对比 | ΔEM | net | p |
-|---|---:|---:|---:|
-| `joint` vs `p-control`（算力匹配） | **−0.10** | +83/−85 | **0.94** |
+诊断排除了实现缺陷：`readout.out_proj.weight` 从严格零变成 L2 = 2.578，43 个张量全部离开初始化，冻结的 448 个 LoRA 张量原样持久化。**模块确实训起来了，学到的修正是真的，只是没有用**——它只改变 59/2000 道题的预测，赢 28 负 31。
 
-检验为精确二项 McNemar，由 `scripts/collect_arm_matrix.py` 生成。
+### 2.1 当时的结论，以及它缺的限定词
+
+首版据此写下"当前配方下额外训练预算的边际价值是负的"，并推论"冻结保护了 R"。
+
+**第二轮证明这个结论只在一半条件下成立。**见下节：同一个 p-control，换成 P 没见过的数据就变成 +1.75。首版的表述缺了"在 P 已经拟合透的数据上"这个前提，据此推出的"解冻是死路"也随之失效。
+
+原始数字全部保留，不追溯修改。
 
 ---
 
-## 4. 训练曲线
+## 3. 第二轮：数据是那个变量（H1 判决）
 
-500 条 dev 子集，仅用于选 best；完整结果评的是 last。
+p-control 是纯粹的单变量对照——**不含任何新模块**，同样 3000 步、同样 lr、同样 seed，只换训练数据：
 
-| step | `train`（冻结） | `joint` | `p-control` |
+| p-control（纯 LoRA，无 R） | EM | vs P | 配对检验 |
+|---|---:|---:|---|
+| 在 P 训练过的 30000 条上 | 52.90 | **−1.60** | p=0.044 |
+| 在 P 没见过的 60447 条上 | 56.25 | **+1.75** | p=0.030 |
+| **摆动** | **+3.35** | | **+186/−119，p=0.00015** |
+
+**H1（数据耗尽）确认。**继续训练从显著有害翻转为显著有益，唯一改变的是数据。
+
+这同时解释了第一轮 R 为何打平：不是学不到东西，而是整个优化面在下行，冻结把它固定在了原地。
+
+---
+
+## 4. seed 42 主线：3000 步与 9000 步
+
+seed 42 是三个 seed 中**两臂同时取得最高分**的那个，因此下表是本方法最有利的一次抽样，不是代表值。
+
+| 运行 | 臂 | 步数 | EM | F1 | sub |
+|---|---|---:|---:|---:|---:|
+| `hp2d0_P` | P（源） | — | 54.50 | 0.6822 | 59.80 |
+| `residual_ext_init_s42` | R (Δ=0) | — | 54.50 | 0.6822 | 59.80 |
+| `residual_ext_train_s42` | R 冻结 | 3000 | 55.00 | 0.6841 | 59.95 |
+| `residual_ext_p-control_s42` | P | 3000 | 56.25 | 0.6921 | 60.70 |
+| **`residual_ext_joint_s42`** | **R** | **3000** | **57.35** | **0.7012** | **61.95** |
+| `residual_ext_p-control_9k_s42` | P | 9000 | 56.10 | 0.6961 | 61.70 |
+| `residual_ext_joint_9k_s42` | R | 9000 | 56.05 | 0.7006 | 61.90 |
+
+**模块判决随步数翻转：**
+
+| 步数 | joint − p-control | net | p |
 |---:|---:|---:|---:|
-| 0 | 56.40 | 56.40 | 56.40 |
-| 500 | 54.60 | 51.00 | 50.20 |
-| 1000 | 55.20 | 53.00 | 52.40 |
-| 1500 | 54.80 | 53.20 | 53.60 |
-| 2000 | 55.40 | 54.00 | 54.80 |
-| 2500 | 55.40 | 53.40 | 54.40 |
-| 3000 | **55.80** | 53.60 | 54.20 |
-| best | step 3000（=last） | step 2000 | step 2000 |
+| 3000 | **+1.10** | +85/−63 | 0.084 |
+| 9000 | **−0.05** | +88/−89 | **1.00** |
 
-两条解冻的曲线是同一个形状：**先塌 5~6 分，再往回爬，到 3000 步仍未回到起点。**这不是"收敛得更好"，是扰动后的不完全恢复。
+### 4.1 baseline 没有"追上来"，是 joint 掉下去了
 
-`joint − p-control` 逐点为 +0.8 / +0.6 / −0.4 / −0.8 / −1.0 / −0.6，**符号在中途翻转**，与全量评测的 −0.10、p=0.94 一致：噪声。
+9000 步这一轮原本要回答"baseline 训练充分后会不会追平"。答案是两者都不是：
 
----
+| 臂 | 3000 步 → 9000 步 | 配对检验 |
+|---|---:|---|
+| p-control | 56.25 → 56.10（**−0.15**） | p=0.90，纹丝不动 |
+| joint | 57.35 → 56.05（**−1.30**） | p=0.10 |
 
-## 5. 陷阱：子集不能当全量读
-
-**dev 前 500 条比全量容易 1.9 分。** P 在同一子集上是 **56.40**，全量是 54.50。
-
-`src/data.py:118` 是 `rows = rows[:limit]`，`[val]` 取的是确定的前 500 条前缀，所以这个换算是可复核的：把 init 那份 2000 条逐题预测取前 500 条重算即得 56.40。
-
-后果很实际：`train` 在 step 3000 的子集 EM 是 **55.8**。若拿它对 54.50 比，会得出"已经超过 baseline +1.3 分"的结论；对着同子集的 56.40 比，真相是 **−0.6**；而全量真值是 **−0.15，不显著**。
-
-**任何 `[val]` 的数都不能直接和 `[eval]` 的数比较。**
-
-另：`joint` 与 `p-control` 的 best（step 2000）≠ last（step 3000），上表报告的 52.80 / 52.90 均为 last，按交接文档要求。`train` 的 best 恰在 step 3000，best == last。
+**baseline 在 3000 步已经收敛，多训 3 倍毫无变化；joint 则从 57.35 滑落到与之会合。**所以 3000 步的 +1.10 既不是"更高的上限"（9k 时为零），也不是"收敛更快"（baseline 没有后续增长可言）。它是一个**只存在于特定训练长度上的边际**。
 
 ---
 
-## 6. 诊断：模块确实训起来了
+## 5. 模块判决：三个 seed
 
-失败模式要先排除"梯度没到"。检查 `residual_train_s42/checkpoint_last.pt`：
+3000 步、留出数据，两臂各三个 seed，其余全部匹配：
 
-| 张量 | 初始 | 训练后 |
+| seed | joint | p-control | 差值 | 配对检验 |
+|---:|---:|---:|---:|---|
+| 42 | **57.35** | **56.25** | +1.10 | +85/−63，p=0.084 |
+| 43 | 55.40 | 55.30 | +0.10 | +72/−70，p=0.933 |
+| 44 | 55.50 | 54.50 | +1.00 | +83/−63，p=0.116 |
+| **均值** | **56.08** | **55.35** | **+0.73** | |
+| 标准差 | 1.10 | 0.88 | 0.55 | |
+
+**其他两个 seed 没有给出比 seed 42 更好的结果——对 joint 和 p-control 都是如此。**这正是不能用 seed 42 代表方法的原因：它对两臂同时有利，说明抽到的是有利的训练轨迹，而非模块的作用。
+
+均值层面：joint 对 P 为 **+1.58**，p-control 对 P 为 **+0.85**。p-control 的 seed 44 恰好落在 54.50，即该 seed 下换新数据对纯 LoRA 零收益。
+
+**统计力量的实际情况：**
+
+| 检验 | 结果 | 临界 |
 |---|---|---|
-| `readout.out_proj.weight` | 严格 0 | L2 = **2.578**，absmax 0.0172 |
-| `readout.out_proj.bias` | 严格 0 | L2 = 0.201 |
-| 全部 43 个张量（4.09M） | — | **43/43 非零** |
+| 各 seed 逐题配对 | p = 0.084 / 0.933 / 0.116 | 无一达 0.05 |
+| seed 层面符号检验（3/3 为正） | p = 0.25 | **n=3 的下限就是 0.25** |
+| seed 层面配对 t（df=2） | t = 2.31 | 需 \|t\| > 4.30 |
 
-输出投影从零初始化离开了，冻结的 decoder LoRA 448 个张量原样持久化。所以这不是实现缺陷，是**学到的修正确实存在，但没有用**：它只动了 59/2000 道题，动了的部分输赢各半。
-
----
-
-## 7. 这一轮排除了什么
-
-- **恒等残差参数化本身不足以带来收益。**保留 P 的每一个原始 latent、零初始化输出、CE 端到端学修正——这套做法在这个配方下的结果是精确的打平。
-- **解冻 decoder 不是出路。**p-control 证明额外训练预算在这批数据上是负的，joint 拿到同样预算后也没能反超。
-- **不能声称"平齐即成功"。**交接文档的目标是超过 P，没有达到。R 与 P 无法区分不是胜利，只是没有退化。
-
-**没有测过的不要写：**本轮未跑错配文档控制、未跑多 seed、未测在线时延、未做预算缩减。KD 路径未启用，`src/distill.py` 中 FP32 `1-1e-9` 舍入至 1 的尾部问题**仍未修复**。
+按当前效应量（0.73）与差值标准差（0.55）外推，约需 5–6 个 seed 才可能达到 p<0.05。**本文没有跑这些 seed。**
 
 ---
 
-## 8. 下一步该换的变量
+## 6. 可以说和不可以说
 
-不是 R 的超参（宽度、blocks、lr）。p-control 把问题定位在模块之外：在一个本身向下的优化面上调模块容量调不出东西。
+**可以说：**
 
-该动的是数据与目标那一层。可用资源的实际盘点见 [`TRAINING_DATA_REDESIGN.md`](TRAINING_DATA_REDESIGN.md)。
+- 恒等初始化在两轮、两份缓存下都精确成立，实现无误。
+- 训练数据是决定性变量：同一个无模块的对照在两批数据上相差 3.35 分（p=0.00015）。
+- 在 P 未见过的数据上训练，所有臂都优于源 baseline 54.50。
+- 3000 步下，三个 seed 的模块边际**方向一致为正**，均值 +0.73。
+
+**不可以说：**
+
+- **不能说残差模块已被证明有效。**其边际在 9000 步为 −0.05（p=1.00），在 3000 步最好的 seed 上也只有 p=0.084，n=3 无法确立。
+- **不能用 57.35 代表方法。**它是三 seed 中最有利的一次抽样，均值为 56.08。
+- 不能把 `joint@3k`(57.35) 与 `p-control@9k`(56.10) 相比——步数不配平，且方向恰好有利于本方法。
+- 不能沿用第一轮"继续训练本身有害"的无限定表述。
+
+**没有测过的：**错配文档控制（第二轮未跑）、test 5405 条（保留未用）、在线时延、预算缩减、多 seed 的 9000 步。KD 未启用，`src/distill.py` 的 FP32 `1-1e-9` 尾部问题仍未修复。
+
+---
+
+## 7. 下一步
+
+唯一能让模块结论落地的是**补 seed**：3000 步、留出数据，joint 与 p-control 各补 45/46/47，共 6 个运行，4 卡约 1.5 小时。到 6 个 seed 若均值维持 0.7 左右，"R 在短训练区间有效"是一个受限但站得住的发现；若均值向 0 收敛，这条路结束。
+
+在此之前不建议调 R 的超参：效应量（0.73）小于各臂自身的 seed 波动（±1.1），任何超参对比都会被噪声淹没。
 
 ---
 
 ## 附：产物
 
 ```
-/data02/quro/runs/residual_init_s42/
-/data02/quro/runs/residual_train_s42/
-/data02/quro/runs/residual_joint_s42/
-/data02/quro/runs/residual_p-control_s42/
+第一轮  /data02/quro/runs/residual_{init,train,joint,p-control}_s42/
+第二轮  /data02/quro/runs/residual_ext_{init,train,joint,p-control}_s42/
+        /data02/quro/runs/residual_ext_{joint,p-control}_s{43,44}/
+        /data02/quro/runs/residual_ext_{joint,p-control}_9k_s42/
+数据    /data02/quro/data/hotpot_full/{train.jsonl,train_heldout.jsonl,corpus.jsonl}
+缓存    /data02/quro/cache/hotpotfull-pisco-r16   509315 篇
 ```
 
-每个目录含 `config.json`、`commit.txt`、`worktree.diff`、`console.log`、`train_log.jsonl`、逐题 `predictions_dev_D0_B80.json`、`result.json`；三个训练运行另含 `checkpoint_last.pt` / `checkpoint_best.pt`（冻结的 P decoder 与 query adapter 一并保存，重载不会退回公开权重）。`init` 与 `train` 另含 `baseline_identity.json`。
+每个运行目录含 `config.json`、`commit.txt`、`worktree.diff`、`console.log`、`train_log.jsonl`、逐题 `predictions_dev_D0_B80.json`、`result.json`；训练运行另含 `checkpoint_{last,best}.pt` 与 `baseline_identity.json`。第二轮的 `config.json` 内含 `data_deviation`，记录相对源 P 运行改动的数据路径。

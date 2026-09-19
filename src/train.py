@@ -107,6 +107,11 @@ def build_args():
     ap.add_argument("--baseline_run", default=None,
                     help="start a NEW full-length P/R experiment from this P run's "
                          "config.json and checkpoint_last.pt; requires --out_dir")
+    ap.add_argument("--allow_data_change", action="store_true",
+                    help="permit --train_file/--cache_dir to differ from the "
+                         "baseline run's; the deviation is recorded in the "
+                         "checkpoint and a replacement cache must encode the "
+                         "same way and cover the baseline's documents")
 
     ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "pisco_residual"], default=None)
     ap.add_argument("--output_query_mode",
@@ -484,7 +489,8 @@ def main():
     stack.lm.to(device)
     if baseline_checkpoint:
         from src.refinement import initialize_from_pisco
-        model.baseline_initialization = initialize_from_pisco(model, baseline_checkpoint)
+        model.baseline_initialization = initialize_from_pisco(
+            model, baseline_checkpoint, allow_data_change=args.allow_data_change)
         print(f"[baseline] {model.baseline_initialization}")
     cfg.to_json(os.path.join(cfg.train.out_dir, "config.json"))
     print(cfg.summary())
