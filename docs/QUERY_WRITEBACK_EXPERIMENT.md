@@ -1,7 +1,9 @@
 # RQ：从 P baseline 起步的 query-as-Q 读出与写回
 
 本变体从 `feat/pisco-identity-residual` 的 `f9c7935` 派生，独立分支为
-`feat/pisco-query-writeback`。它是待验证的修正器变体，不代表已取得任务收益。
+`feat/pisco-query-writeback`。第 1–5 节是 2026-09-20 首轮运行**之前**写的方案，原样保留；
+**首轮结果见第 6 节：两个数据集、一个 seed，模块边际都是零。**方案里"待验证、不代表已取得
+任务收益"的限定，现在有了数据支撑，不再是预防性措辞。
 
 ## 1. 与原方法分开命名
 
@@ -125,3 +127,108 @@ latent 重排等变性、梯度解锁、CPU BF16 autocast、训练过的 P 权�
 
 另通过 `src.train` 的 toy 两步训练、自动初始恒等检查、保存及重新加载评测，
 并检查结果标识和 attention 轴。未运行真实 7B GPU 训练；尚无 HotpotQA/TriviaQA 新分数。
+
+（2026-09-20 复跑：RQ 8 项、R 3 项通过，`test_shapes.py` 现为 113 项全过——该文件在
+写作本节后又有增补，102 是当时的计数，不是回归。）
+
+---
+
+## 6. 首轮结果（2026-09-20）
+
+> 数据：[`results/arm_matrix.json`](../results/arm_matrix.json)（62 次运行、55 组配对检验）
+> 生成：`python scripts/collect_arm_matrix.py`
+> 运行目录：`/data02/quro/runs/query_writeback_ext_{init,train,joint}_s42` 及 `..._joint_s42_trivia`
+
+### 6.0 二十秒版本
+
+1. **恒等起点精确成立。**零初始化的 RQ 在完整 dev 上打出 54.50，与源 P **逐题 2000/2000 完全相同**（delta=0.00，0 胜 0 负）。后面的负数不是实现缺陷。
+2. **HotpotQA 上模块边际 −0.20（p=0.80）。**joint 56.05 vs 匹配的 p-control 56.25。
+3. **TriviaQA 零样本上 +0.10（p=0.92）。**70.50 vs 同一对照的 70.40。
+4. **两个数据集上都是零，符号还相反**——这正是噪声的形状，不是"一个数据集上有效"。
+5. **冻结版低于自己的起点**（54.25 vs 54.50，−0.25，p=0.66）：模块单独学不出可用信号。R 的冻结版当时是 +0.50。
+6. **RQ 没有复现 R 那个本就未确立的正边际。**同 seed 同数据下 RQ 比 R 低 1.30（p=0.030）。
+7. **但 RQ 与 R 的高低随数据集翻号**：HotpotQA 上 R 高 1.30，TriviaQA 上 RQ 高 0.85（p=0.11）。两个都没有稳定信号时本该如此，不能反过来当作 RQ 的战果。
+
+### 6.1 运行配置
+
+与 R 的第二轮（held-out）**逐项匹配**：同一个 `hp2d0_P/checkpoint_last.pt`、
+`train_heldout.jsonl` 60447 条、`hotpotfull-pisco-r16` 缓存、3000 步、lr 1e-4、
+seed 42、B=80 不截断、D0、明文问题、固定 query adapter、纯 CE。
+
+```bash
+TRAIN_FILE=/data02/quro/data/hotpot_full/train_heldout.jsonl \
+CACHE_DIR=/data02/quro/cache/hotpotfull-pisco-r16 \
+TAG=query_writeback_ext_init_s42 \
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_query_writeback.sh init     # 同理 train / joint
+
+TAGS="query_writeback_ext_joint_s42" GPUS=0 bash scripts/run_trivia_transfer.sh
+```
+
+**p-control 没有重跑**，直接用 R 的 `residual_ext_p-control_s42`。那个臂根本没有模块
+（`pisco_direct`），对 R 和 RQ 是同一个对照；重跑只会引入一次无谓的 seed 抽样。
+代价是 RQ 只有 seed 42 一个点，不能像 R 那样报三 seed。
+
+可训参数：RQ readout 4.21M vs R 4.09M，同 `d_readout=256`，差 3%。
+**同宽度不等于同参数量**，但这个差距不足以解释 1.30 的落差。
+
+### 6.2 HotpotQA dev 2000，D0，B=80，last checkpoint
+
+| 臂 | 模块 | decoder LoRA | EM | F1 | sub |
+|---|---|---|---:|---:|---:|
+| 源 P（`hp2d0_P`） | 无 | — | 54.50 | 0.682 | 59.80 |
+| RQ `init` | 4.21M，Δ=0 | 冻结 | **54.50** | 0.682 | 59.80 |
+| RQ `train` | 4.21M | 冻结 | 54.25 | 0.680 | 59.35 |
+| R `train` | 4.09M | 冻结 | 55.00 | 0.684 | 59.95 |
+| **`p-control`** | **无** | 41.94M | **56.25** | 0.692 | 60.70 |
+| R `joint` | 4.09M | 41.94M | 57.35 | 0.701 | 61.95 |
+| **RQ `joint`** | **4.21M** | 41.94M | **56.05** | 0.697 | 60.85 |
+
+配对 McNemar（同 2000 题逐题）：
+
+| 比较 | Δ EM | 胜/负 | p |
+|---|---:|---:|---:|
+| RQ `init` vs 源 P | **+0.00** | **0/0** | 1.000 |
+| RQ `train` vs RQ `init` | −0.25 | 40/45 | 0.665 |
+| **RQ `joint` vs `p-control`** | **−0.20** | 69/73 | **0.801** |
+| RQ `joint` vs R `joint` | −1.30 | 54/80 | 0.030 |
+
+第一行是实现检查，**0 胜 0 负**意味着两个模型在 2000 题上给出了完全一致的判对判错，
+不是"分数碰巧相等"。第三行是唯一能把收益归因给 RQ 模块的比较，它是负的，且远不显著。
+
+### 6.3 TriviaQA 2000 题零样本迁移
+
+同一批权重，不在 TriviaQA 上训练，`gonogo-pisco-r16` 缓存，`--doc_control` 必开。
+
+| 臂 | 正确文档 EM | 错配文档地板 | 证据值 |
+|---|---:|---:|---:|
+| 源 P（B=8） | 71.95 | 59.50 | +12.45 |
+| `p-control` s42 | 70.40 | 54.45 | +15.95 |
+| R `joint` s42 | 69.65 | 53.45 | +16.20 |
+| **RQ `joint` s42** | **70.50** | **53.95** | **+16.55** |
+
+| 比较 | Δ EM | 胜/负 | p |
+|---|---:|---:|---:|
+| **RQ `joint` vs `p-control`** | **+0.10** | 54/52 | **0.923** |
+| RQ `joint` vs R `joint` | +0.85 | 59/42 | 0.111 |
+| RQ `joint` vs 源 P | −1.45 | 73/102 | 0.034 |
+
+**RQ 的证据值是三个 HotpotQA 训练臂里最高的（+16.55），这不作为战果。**理由与
+[`RESIDUAL_RESULTS.md`](RESIDUAL_RESULTS.md) 第 6.2 节相同：证据值升高是**所有**在
+HotpotQA 上继续训练的臂的共同副作用，没有模块的 `p-control` 自己就有 +15.95；
+它来自参数记忆下降（地板 59.50 → 53.95）而非证据利用变强，而主指标 EM 是跌的
+（−1.45，p=0.034）。这正是 D4/D5 被拒时的论证形状，不拿来给 RQ 翻案。
+
+### 6.4 结论与不做什么
+
+**结论：RQ 首轮无收益。**两个数据集上模块边际分别是 −0.20 和 +0.10，都落在 2000 题的
+1 SE ≈ 1.1 之内，方向相反。现有证据强度**弱于 R**——R 至少在 HotpotQA 上三 seed 同号。
+
+**不建议补 seed 43/44。**R 的 +0.73 ± 0.55 本身就未确立，RQ 在 R 表现最好的那个 seed 上
+是负的；按同样的效应量外推，加 seed 更可能只是把 0 测得更准。若仍要补，joint 与
+p-control 必须成对、同数据同步数，不能拿 RQ 的新 seed 去比 R 现成的 p-control。
+
+**不能写的话**：不能说"RQ 优于 R"（TriviaQA 上的 +0.85 p=0.11，且 HotpotQA 上反向）；
+不能说"Q/K 对调有效或无效"——R 与 RQ 同时改变了方向**和**文档间交互结构（R 有 latent
+self-attention，RQ 没有），1.30 的差不能单独归因给 Q/K 对调；不能用证据值代替 EM 下结论。
+
+本轮没有修改缓存、压缩器、R 的任何 checkpoint 或旧实验结果；`p-control` 是复用的既有运行。

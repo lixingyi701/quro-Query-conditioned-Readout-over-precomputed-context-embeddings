@@ -1,6 +1,6 @@
 {
-  "commit": "8c6cd5c2c5184bdc13b76f0c330c008dbc3a03dd",
-  "generated": "2026-09-20T09:27:05+00:00",
+  "commit": "ccfc1f8c0df5783ba5a2c916c153f2ccdf30cd83",
+  "generated": "2026-09-20T11:33:27+00:00",
   "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
   "paired_tests": [
     {
@@ -1057,6 +1057,160 @@
         "losses": 101,
         "p": 4.037220022306469e-05,
         "wins": 50
+      }
+    },
+    {
+      "a": "query_writeback_ext_init_s42",
+      "arm_a": "RQ",
+      "arm_b": "P",
+      "b": "hp2d0_P",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": 0.0,
+        "losses": 0,
+        "p": 1.0,
+        "wins": 0
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "writeback/B80/heldout/3k",
+      "substring": {
+        "delta": 0.0,
+        "losses": 0,
+        "p": 1.0,
+        "wins": 0
+      }
+    },
+    {
+      "a": "query_writeback_ext_train_s42",
+      "arm_a": "RQ",
+      "arm_b": "RQ",
+      "b": "query_writeback_ext_init_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.25,
+        "losses": 45,
+        "p": 0.6646454904132143,
+        "wins": 40
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "writeback/B80/heldout/3k",
+      "substring": {
+        "delta": -0.45,
+        "losses": 44,
+        "p": 0.3681876338306308,
+        "wins": 35
+      }
+    },
+    {
+      "a": "query_writeback_ext_joint_s42",
+      "arm_a": "RQ",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -0.2,
+        "losses": 73,
+        "p": 0.8013390218104024,
+        "wins": 69
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "writeback/B80/heldout/3k",
+      "substring": {
+        "delta": 0.15,
+        "losses": 66,
+        "p": 0.8634152303019917,
+        "wins": 69
+      }
+    },
+    {
+      "a": "query_writeback_ext_joint_s42",
+      "arm_a": "RQ",
+      "arm_b": "R",
+      "b": "residual_ext_joint_s42",
+      "dataset": "hotpotqa",
+      "em": {
+        "delta": -1.3,
+        "losses": 80,
+        "p": 0.030414804699519814,
+        "wins": 54
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "writeback/B80/heldout/3k",
+      "substring": {
+        "delta": -1.1,
+        "losses": 76,
+        "p": 0.06508646998863726,
+        "wins": 54
+      }
+    },
+    {
+      "a": "query_writeback_ext_joint_s42_trivia",
+      "arm_a": "RQ",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s42_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 0.1,
+        "losses": 52,
+        "p": 0.9226851594412759,
+        "wins": 54
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": 0.05,
+        "losses": 51,
+        "p": 1.0,
+        "wins": 52
+      }
+    },
+    {
+      "a": "query_writeback_ext_joint_s42_trivia",
+      "arm_a": "RQ",
+      "arm_b": "R",
+      "b": "residual_ext_joint_s42_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 0.85,
+        "losses": 42,
+        "p": 0.11091834966064046,
+        "wins": 59
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": 1.2,
+        "losses": 38,
+        "p": 0.020978735677851718,
+        "wins": 62
+      }
+    },
+    {
+      "a": "query_writeback_ext_joint_s42_trivia",
+      "arm_a": "RQ",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -1.45,
+        "losses": 102,
+        "p": 0.03399457659794055,
+        "wins": 73
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -1.7,
+        "losses": 96,
+        "p": 0.008447917296215086,
+        "wins": 62
       }
     }
   ],
@@ -2340,6 +2494,128 @@
       "setting": "fixedq/B8/D5/kd0.5",
       "split": "dev",
       "teacher_logits": "/data02/quro/runs/hp2d0_P/teacher_train_T2.pt"
+    },
+    "query_writeback_ext_init_s42": {
+      "arm": "RQ",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.545,
+            "f1": 0.6821782908125013,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.598,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": null,
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_query_writeback",
+      "setting": "writeback/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "query_writeback_ext_joint_s42": {
+      "arm": "RQ",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5605,
+            "f1": 0.6965936985529084,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.6085,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": null,
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_query_writeback",
+      "setting": "writeback/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
+    },
+    "query_writeback_ext_joint_s42_trivia": {
+      "arm": "RQ",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.705,
+            "f1": 0.75909990677737,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.7505,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1655,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5395,
+            "f1": 0.5847519841269843,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.565,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": null,
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_query_writeback",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
+    "query_writeback_ext_train_s42": {
+      "arm": "RQ",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "hotpotqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0285,
+            "em": 0.5425,
+            "f1": 0.6801222422314529,
+            "mean_decoder_input_tokens": 155.549,
+            "n": 2000,
+            "substring": 0.5935,
+            "xi_eff": 13.971155776372578
+          }
+        }
+      },
+      "output_query_mode": null,
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_query_writeback",
+      "setting": "writeback/B80/heldout/3k",
+      "split": "dev",
+      "teacher_logits": null
     },
     "r0S_S": {
       "arm": "S",

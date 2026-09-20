@@ -124,6 +124,18 @@ REGISTRY = [
     ("residual_ext_p-control_s43_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
     ("residual_ext_joint_s44_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
     ("residual_ext_p-control_s44_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    # Write-back wave (RQ).  Same P checkpoint, data, steps, seed and budget as
+    # the held-out residual rows, but a different module: query is Q, latents are
+    # KV, and the same attention matrix is transposed to write back.  It gets its
+    # own setting label because R and RQ change both the direction and the
+    # inter-document structure, so their rows answer different questions and must
+    # not be pooled.  Its p-control is residual_ext_p-control_s42, shared with R
+    # and not re-run: that arm has no module at all, so it is the same control
+    # for both.  The transfer row uses the same weights, no TriviaQA training.
+    ("query_writeback_ext_init_s42", "hotpotqa", "dev", "writeback/B80/heldout/3k"),
+    ("query_writeback_ext_train_s42", "hotpotqa", "dev", "writeback/B80/heldout/3k"),
+    ("query_writeback_ext_joint_s42", "hotpotqa", "dev", "writeback/B80/heldout/3k"),
+    ("query_writeback_ext_joint_s42_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
 ]
 
 # Comparisons worth a paired test, as (dataset, setting, mode, arm_a, arm_b).
@@ -196,6 +208,19 @@ PAIRED = [
     ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s42_trivia", "hp2d0_P_trivia"),
     ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s43_trivia", "hp2d0_P_trivia"),
     ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s44_trivia", "hp2d0_P_trivia"),
+    # Write-back (RQ), one seed.  The first row is the implementation check and
+    # must come out at exactly zero; the second is the module verdict against the
+    # control R already used, so the two modules are read against the same
+    # baseline.  The RQ-vs-R row compares two modules, not a module against
+    # nothing, and both of them differ from the control by more than direction.
+    ("hotpotqa", "writeback/B80/heldout/3k", "D0", "query_writeback_ext_init_s42", "hp2d0_P"),
+    ("hotpotqa", "writeback/B80/heldout/3k", "D0", "query_writeback_ext_train_s42", "query_writeback_ext_init_s42"),
+    ("hotpotqa", "writeback/B80/heldout/3k", "D0", "query_writeback_ext_joint_s42", "residual_ext_p-control_s42"),
+    ("hotpotqa", "writeback/B80/heldout/3k", "D0", "query_writeback_ext_joint_s42", "residual_ext_joint_s42"),
+    # And the same two questions after a change of dataset.
+    ("triviaqa", "transfer/zero-shot", "D0", "query_writeback_ext_joint_s42_trivia", "residual_ext_p-control_s42_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "query_writeback_ext_joint_s42_trivia", "residual_ext_joint_s42_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "query_writeback_ext_joint_s42_trivia", "hp2d0_P_trivia"),
 ]
 
 # Runs whose budget is not 8; used to line up predictions files and to label the
@@ -215,7 +240,10 @@ BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0"
                # every cached latent -- so the two are still comparable.
                "residual_ext_joint_s42_trivia", "residual_ext_p-control_s42_trivia",
                "residual_ext_joint_s43_trivia", "residual_ext_p-control_s43_trivia",
-               "residual_ext_joint_s44_trivia", "residual_ext_p-control_s44_trivia")}}
+               "residual_ext_joint_s44_trivia", "residual_ext_p-control_s44_trivia",
+               "query_writeback_ext_init_s42", "query_writeback_ext_train_s42",
+               "query_writeback_ext_joint_s42",
+               "query_writeback_ext_joint_s42_trivia")}}
 # Runs whose decoder reads something other than D0.  Recorded rather than derived
 # so a D4 run can never be pooled with a D0 one on a matching metric name.
 DECODER_MODES = {"q4_C1": "D4", "q4kd_C1": "D4", "q5_C1": "D5", "q5kd_C1": "D5"}
