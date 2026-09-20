@@ -1,6 +1,6 @@
 {
-  "commit": "2428f8a6603bcaa5bd33c29420d7ca335f08ccc3",
-  "generated": "2026-09-19T07:12:08+00:00",
+  "commit": "8c6cd5c2c5184bdc13b76f0c330c008dbc3a03dd",
+  "generated": "2026-09-20T09:27:05+00:00",
   "note": "EM/substring are fractions. evidence_em is clean minus the mismatch-document control and is the only number that reflects evidence use; runs whose control was mismatch-query have none. qdrop1.0 and qdrop0 columns are not comparable: qdrop1.0 never shows the decoder the question during training, so its D0 is out of distribution.",
   "paired_tests": [
     {
@@ -859,6 +859,204 @@
         "losses": 112,
         "p": 0.22377628757372944,
         "wins": 132
+      }
+    },
+    {
+      "a": "residual_ext_joint_s42_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s42_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -0.75,
+        "losses": 61,
+        "p": 0.17564027334487997,
+        "wins": 46
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -1.15,
+        "losses": 59,
+        "p": 0.023488002836921148,
+        "wins": 36
+      }
+    },
+    {
+      "a": "residual_ext_joint_s43_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s43_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 0.15,
+        "losses": 57,
+        "p": 0.853408445895563,
+        "wins": 60
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": 0.05,
+        "losses": 53,
+        "p": 1.0,
+        "wins": 54
+      }
+    },
+    {
+      "a": "residual_ext_joint_s44_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "residual_ext_p-control_s44_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": 0.2,
+        "losses": 50,
+        "p": 0.7687918101386728,
+        "wins": 54
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": 0.1,
+        "losses": 53,
+        "p": 0.9234010375945975,
+        "wins": 55
+      }
+    },
+    {
+      "a": "residual_ext_joint_s42_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -2.3,
+        "losses": 110,
+        "p": 0.0006052447871282059,
+        "wins": 64
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -2.9,
+        "losses": 108,
+        "p": 4.565478697279842e-06,
+        "wins": 50
+      }
+    },
+    {
+      "a": "residual_ext_joint_s43_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -3.45,
+        "losses": 133,
+        "p": 9.93275071220648e-07,
+        "wins": 64
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -3.35,
+        "losses": 121,
+        "p": 4.4403518695191765e-07,
+        "wins": 54
+      }
+    },
+    {
+      "a": "residual_ext_joint_s44_trivia",
+      "arm_a": "R",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -2.8,
+        "losses": 110,
+        "p": 1.4609835149368549e-05,
+        "wins": 54
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -2.45,
+        "losses": 100,
+        "p": 8.212852870228109e-05,
+        "wins": 51
+      }
+    },
+    {
+      "a": "residual_ext_p-control_s42_trivia",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -1.55,
+        "losses": 99,
+        "p": 0.019986107366167807,
+        "wins": 68
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -1.75,
+        "losses": 90,
+        "p": 0.004581353958249225,
+        "wins": 55
+      }
+    },
+    {
+      "a": "residual_ext_p-control_s43_trivia",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -3.6,
+        "losses": 133,
+        "p": 2.53557327598831e-07,
+        "wins": 61
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -3.4,
+        "losses": 122,
+        "p": 3.183762238122357e-07,
+        "wins": 54
+      }
+    },
+    {
+      "a": "residual_ext_p-control_s44_trivia",
+      "arm_a": "P",
+      "arm_b": "P",
+      "b": "hp2d0_P_trivia",
+      "dataset": "triviaqa",
+      "em": {
+        "delta": -3.0,
+        "losses": 111,
+        "p": 2.774505929960007e-06,
+        "wins": 51
+      },
+      "mode": "D0",
+      "n": 2000,
+      "setting": "transfer/zero-shot",
+      "substring": {
+        "delta": -2.55,
+        "losses": 101,
+        "p": 4.037220022306469e-05,
+        "wins": 50
       }
     }
   ],
@@ -1894,6 +2092,44 @@
       "split": "dev",
       "teacher_logits": null
     },
+    "hp2d0_P_trivia": {
+      "arm": "P",
+      "budget": 8,
+      "cosine_prior": true,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=8": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.7195,
+            "f1": 0.772872727272728,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.7675,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1245,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.595,
+            "f1": 0.6380480019980026,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.6225,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "shared_current",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
     "hp2d0_S": {
       "arm": "S",
       "budget": 8,
@@ -2455,6 +2691,44 @@
       "split": "dev",
       "teacher_logits": null
     },
+    "residual_ext_joint_s42_trivia": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.6965,
+            "f1": 0.7485557359307369,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.7385,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.162,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5345,
+            "f1": 0.5787289682539687,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.5585,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
     "residual_ext_joint_s43": {
       "arm": "R",
       "budget": 80,
@@ -2483,6 +2757,44 @@
       "split": "dev",
       "teacher_logits": null
     },
+    "residual_ext_joint_s43_trivia": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.685,
+            "f1": 0.7438088326877812,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.734,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1505,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5345,
+            "f1": 0.575694094794095,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.554,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
     "residual_ext_joint_s44": {
       "arm": "R",
       "budget": 80,
@@ -2509,6 +2821,44 @@
       "readout": "pisco_residual",
       "setting": "residual/B80/heldout/3k",
       "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_joint_s44_trivia": {
+      "arm": "R",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.6915,
+            "f1": 0.7512727633477644,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.743,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.133,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5585,
+            "f1": 0.6045253968253972,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.5865,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_residual",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
       "teacher_logits": null
     },
     "residual_ext_p-control_9k_s42": {
@@ -2567,6 +2917,44 @@
       "split": "dev",
       "teacher_logits": null
     },
+    "residual_ext_p-control_s42_trivia": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.704,
+            "f1": 0.7583032828282839,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.75,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1595,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.5445,
+            "f1": 0.5889872405372407,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.5685,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
     "residual_ext_p-control_s43": {
       "arm": "P",
       "budget": 80,
@@ -2595,6 +2983,44 @@
       "split": "dev",
       "teacher_logits": null
     },
+    "residual_ext_p-control_s43_trivia": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.6835,
+            "f1": 0.7424629120879132,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.7335,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1405,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.543,
+            "f1": 0.5830785103785104,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.5665,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
+      "teacher_logits": null
+    },
     "residual_ext_p-control_s44": {
       "arm": "P",
       "budget": 80,
@@ -2621,6 +3047,44 @@
       "readout": "pisco_direct",
       "setting": "residual/B80/heldout/3k",
       "split": "dev",
+      "teacher_logits": null
+    },
+    "residual_ext_p-control_s44_trivia": {
+      "arm": "P",
+      "budget": 80,
+      "cosine_prior": false,
+      "dataset": "triviaqa",
+      "decoder_input_mode": "D0",
+      "kd_weight": 0.0,
+      "modes": {
+        "D0|B=80": {
+          "clean": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.6895,
+            "f1": 0.7463960531146929,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.742,
+            "xi_eff": 15.992314358693669
+          },
+          "evidence_em": 0.1295,
+          "mismatch-doc": {
+            "constant_baseline_em": 0.0035,
+            "em": 0.56,
+            "f1": 0.6028515873015875,
+            "mean_decoder_input_tokens": 110.949,
+            "n": 2000,
+            "substring": 0.589,
+            "xi_eff": 15.992314358693669
+          }
+        }
+      },
+      "output_query_mode": "xattn",
+      "query_representation": "fixed_adapter",
+      "query_text_dropout": 0.0,
+      "readout": "pisco_direct",
+      "setting": "transfer/zero-shot",
+      "split": "trivia",
       "teacher_logits": null
     },
     "residual_ext_train_s42": {

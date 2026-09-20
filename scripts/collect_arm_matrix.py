@@ -110,6 +110,20 @@ REGISTRY = [
     ("residual_ext_p-control_s44", "hotpotqa", "dev", "residual/B80/heldout/3k"),
     ("residual_ext_joint_9k_s42", "hotpotqa", "dev", "residual/B80/heldout/9k"),
     ("residual_ext_p-control_9k_s42", "hotpotqa", "dev", "residual/B80/heldout/9k"),
+    # Zero-shot transfer of the held-out wave onto TriviaQA: the same weights,
+    # no TriviaQA training, scored against the same source P.  A separate
+    # dataset *and* setting, because nothing here shares an evaluation set with
+    # the rows above and pooling the two would average a dev score with a
+    # transfer score.  TriviaQA compresses arm differences -- P answers 59.5% of
+    # it with the wrong documents in front of it -- so evidence_em, not em, is
+    # the column that means anything, and even that is a diagnostic.
+    ("hp2d0_P_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_joint_s42_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_p-control_s42_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_joint_s43_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_p-control_s43_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_joint_s44_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
+    ("residual_ext_p-control_s44_trivia", "triviaqa", "trivia", "transfer/zero-shot"),
 ]
 
 # Comparisons worth a paired test, as (dataset, setting, mode, arm_a, arm_b).
@@ -169,6 +183,19 @@ PAIRED = [
     # Does longer training move either arm?
     ("hotpotqa", "residual/B80/heldout/9k", "D0", "residual_ext_joint_9k_s42", "residual_ext_joint_s42"),
     ("hotpotqa", "residual/B80/heldout/9k", "D0", "residual_ext_p-control_9k_s42", "residual_ext_p-control_s42"),
+    # Transfer: does the module's HotpotQA margin survive a change of dataset,
+    # and what did the held-out training cost off-domain?  The per-seed module
+    # rows come first because they are the ones that answer the standing
+    # question; the vs-P rows below measure the price of the gain.
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s42_trivia", "residual_ext_p-control_s42_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s43_trivia", "residual_ext_p-control_s43_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s44_trivia", "residual_ext_p-control_s44_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s42_trivia", "hp2d0_P_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s43_trivia", "hp2d0_P_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_joint_s44_trivia", "hp2d0_P_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s42_trivia", "hp2d0_P_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s43_trivia", "hp2d0_P_trivia"),
+    ("triviaqa", "transfer/zero-shot", "D0", "residual_ext_p-control_s44_trivia", "hp2d0_P_trivia"),
 ]
 
 # Runs whose budget is not 8; used to line up predictions files and to label the
@@ -181,7 +208,14 @@ BUDGETS = {"bs16_C1": 16, "bs32_C1": 32, "bs16S_S": 16, "bs32S_S": 32, "bs32_C0"
                "residual_ext_joint_s42", "residual_ext_p-control_s42",
                "residual_ext_joint_s43", "residual_ext_p-control_s43",
                "residual_ext_joint_s44", "residual_ext_p-control_s44",
-               "residual_ext_joint_9k_s42", "residual_ext_p-control_9k_s42")}}
+               "residual_ext_joint_9k_s42", "residual_ext_p-control_9k_s42",
+               # The transfer runs keep each arm's own budget: B=80 for the
+               # residual arms, B=8 for hp2d0_P_trivia, which falls through to
+               # the default.  Neither label truncates -- both hand the decoder
+               # every cached latent -- so the two are still comparable.
+               "residual_ext_joint_s42_trivia", "residual_ext_p-control_s42_trivia",
+               "residual_ext_joint_s43_trivia", "residual_ext_p-control_s43_trivia",
+               "residual_ext_joint_s44_trivia", "residual_ext_p-control_s44_trivia")}}
 # Runs whose decoder reads something other than D0.  Recorded rather than derived
 # so a D4 run can never be pooled with a D0 one on a matching metric name.
 DECODER_MODES = {"q4_C1": "D4", "q4kd_C1": "D4", "q5_C1": "D5", "q5kd_C1": "D5"}

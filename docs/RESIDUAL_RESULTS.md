@@ -1,12 +1,12 @@
 # 残差臂 R：从已训练 P 出发的恒等初始化修正
 
-> 日期：2026-09-19（2026-09-18 首版，第 2 节结论已按新证据修订）
-> 数据：[`results/arm_matrix.json`](../results/arm_matrix.json)（51 次运行、39 组配对检验）
+> 日期：2026-09-20（2026-09-18 首版；第 2 节结论已按第二轮修订，第 6 节为第三轮新增）
+> 数据：[`results/arm_matrix.json`](../results/arm_matrix.json)（58 次运行、48 组配对检验）
 > 生成：`python scripts/collect_arm_matrix.py`
-> 范围：HotpotQA dev 2000 条，D0，B=80（全部缓存 latent，不截断）。
+> 范围：HotpotQA dev 2000 条，D0，B=80（全部缓存 latent，不截断）；第 6 节为 TriviaQA 2000 条零样本迁移。
 > 实现：分支 `feat/pisco-identity-residual`，方案见 [`PISCO_RESIDUAL_EXPERIMENT.md`](PISCO_RESIDUAL_EXPERIMENT.md)
 
-本文记录两轮实验。第一轮在 P 已训练过的 30000 条上，结论是零收益；第二轮换到 P 从未见过的 60447 条上，结论改变。**第二轮同时修正了第一轮对自身结果的解释**，两轮都完整保留。
+本文记录三轮实验。第一轮在 P 已训练过的 30000 条上，结论是零收益；第二轮换到 P 从未见过的 60447 条上，结论改变；第三轮把第二轮的权重原样搬到 TriviaQA 上零样本评测。**每一轮都修正了上一轮对自身结果的解释**，三轮原始数字都完整保留，不追溯修改。
 
 ---
 
@@ -19,12 +19,15 @@
 5. **模块的贡献方向一致但未确立。**3000 步下三个 seed 的 joint − p-control 为 +1.10 / +0.10 / +1.00，均值 **+0.73 ± 0.55**，3/3 为正，但没有一个 seed 单独显著，n=3 的符号检验上限就是 p=0.25。
 6. **这个边际在 9000 步消失。**同一 seed 下 joint 56.05 vs p-control 56.10，−0.05，+88/−89，**p=1.00**。
 7. **最好的单个成绩是 seed 42 的 joint@3k = 57.35**（对 P +2.85，p=0.00037），但三 seed 均值只有 56.08（+1.58）。**57.35 不能作为方法的代表值。**
+8. **第三轮（TriviaQA 零样本迁移）：边际也不迁移。**三 seed 的 joint − p-control 为 −0.75 / +0.15 / +0.20，均值 **−0.13**，且 HotpotQA 上边际最大的 seed 42 在这里是唯一为负、也是最负的那个。
+9. **HotpotQA 上赚的，在 TriviaQA 上全赔。**六个臂**无一例外**低于源 P 的 71.95（68.35~70.40），全部显著（p ≤ 0.02）。第二轮的提升是专化，不是变强。
+10. **赔掉的是参数记忆，不是证据利用**（错配地板 59.50 → 53.45~56.00，证据值反升）。**但这不作为战果**：主指标是跌的，详见第 6.2 节。
 
 ---
 
-## 1. 两轮的运行
+## 1. 三轮的运行
 
-四个臂在两轮里定义相同，都从 `hp2d0_P/checkpoint_last.pt` 加载同一个已训练 decoder：
+四个臂在三轮里定义相同，都从 `hp2d0_P/checkpoint_last.pt` 加载同一个已训练 decoder；第三轮不训练，只把第二轮的权重换个数据集评测：
 
 | 臂 | readout | decoder LoRA | 可训参数 |
 |---|---|---|---:|
@@ -43,9 +46,12 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh {init,train,joint,p-co
 TRAIN_FILE=/data02/quro/data/hotpot_full/train_heldout.jsonl \
 CACHE_DIR=/data02/quro/cache/hotpotfull-pisco-r16 \
 CUDA_VISIBLE_DEVICES=0 bash scripts/run_pisco_residual.sh joint
+
+# 第三轮：同一批权重，TriviaQA 零样本，不训练
+bash scripts/run_trivia_transfer.sh
 ```
 
-数据来源见 [`TRAINING_DATA_REDESIGN.md`](TRAINING_DATA_REDESIGN.md)：HotpotQA 原始 train 90447 条，P 用掉 30000，留出 60447。dev 2000 与 test 5405 **两轮完全未动**，`dev.jsonl` 字节级一致（md5 `cb0f1db0…`）。
+数据来源见 [`TRAINING_DATA_REDESIGN.md`](TRAINING_DATA_REDESIGN.md)：HotpotQA 原始 train 90447 条，P 用掉 30000，留出 60447。dev 2000 与 test 5405 **三轮完全未动**，`dev.jsonl` 字节级一致（md5 `cb0f1db0…`）。
 
 第二轮换了缓存（509315 篇，覆盖全量语料）。换缓存不是免费的，所以做了两道检查：
 
@@ -158,31 +164,97 @@ seed 42 是三个 seed 中**两臂同时取得最高分**的那个，因此下�
 
 ---
 
-## 6. 可以说和不可以说
+## 6. 第三轮：TriviaQA 零样本迁移
+
+第二轮的权重原样搬过去，**不做任何 TriviaQA 训练**，评 2000 题。测的是全部 7 个模型（源 P + 两臂各三 seed），不是只测最好的那个——seed 42 是三 seed 中两臂同时最高的抽样，只测它等于用最有利的样本去确认一个尚未确立的结论。
+
+```bash
+bash scripts/run_trivia_transfer.sh
+```
+
+| 模型 | EM | 错配文档 | 证据 | F1 | vs P（EM） | 配对检验 |
+|---|---:|---:|---:|---:|---:|---|
+| **`hp2d0_P`（源）** | **71.95** | 59.50 | 12.45 | 0.7729 | — | — |
+| `joint` s42 | 69.65 | 53.45 | 16.20 | 0.7486 | −2.30 | +64/−110，p=0.0006 |
+| `joint` s43 | 68.50 | 53.45 | 15.05 | 0.7438 | −3.45 | +64/−133，p<0.0001 |
+| `joint` s44 | 69.15 | 55.85 | 13.30 | 0.7513 | −2.80 | +54/−110，p<0.0001 |
+| `p-control` s42 | 70.40 | 54.45 | 15.95 | 0.7583 | −1.55 | +68/−99，p=0.020 |
+| `p-control` s43 | 68.35 | 54.30 | 14.05 | 0.7425 | −3.60 | +61/−133，p<0.0001 |
+| `p-control` s44 | 68.95 | 56.00 | 12.95 | 0.7464 | −3.00 | +51/−111，p<0.0001 |
+
+### 6.1 模块边际不迁移，且在最好的 seed 上反号
+
+| seed | HotpotQA dev | TriviaQA | 配对检验（trivia） |
+|---:|---:|---:|---|
+| 42 | **+1.10** | **−0.75** | +46/−61，p=0.176 |
+| 43 | +0.10 | +0.15 | +60/−57，p=0.853 |
+| 44 | +1.00 | +0.20 | +54/−50，p=0.769 |
+| **均值** | **+0.73** | **−0.13** | |
+
+seed 42 在 HotpotQA 上给出最大的模块边际，在 TriviaQA 上却是唯一为负、也是最负的一个。**如果那 4.09M 真在做 query 条件化读出这件事，它最得力的实例不该在换数据集时翻号。**
+
+这把第 5 节"方向一致但未确立"的天平进一步压向噪声：+0.73 更像有利训练轨迹的产物。
+
+公平起见记下另一种解释：模块可能只对多跳（HotpotQA）有用、对单跳事实查询（TriviaQA）无用。这不能排除。但两个数据集上都没有任何单 seed 显著、n=3，更简洁的解释是噪声。
+
+### 6.2 证据值升高，不作为战果
+
+错配地板从 P 的 59.50 塌到 53.45~56.00，而证据值（干净 − 错配）从 12.45 升到多数臂的 13~16。字面上是"更依赖检索证据、更少依赖背下来的知识"。
+
+**但这正是 D4/D5 当初被拒绝的论证形状**——见 [`RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md`](RESIDUAL_DIRECTION_HANDOFF_2026_09_18.md) §2.2：*不能以差值变大替代主指标变好*，且错误文档可能主动误导模型，差值不是精确的证据信息量。主指标是跌的。这里只把它记为诊断。
+
+### 6.3 两个限定
+
+- **输入长度分布外。**TriviaQA 每问 5.5 篇文档 ≈ 44 个有效 latent，而所有臂都在固定 80 个上训练。对各臂一视同仁，但"迁移变差"里长度偏移与数据集偏移**无法分离**。
+- **TriviaQA 本身可争夺空间小。**源 P 的 71.95 里只有 12.45 来自证据，其余是参数记忆。这个基准天然压缩臂间差异，读 `evidence_em` 比读 `em` 有意义，但两者都不足以单独定论。
+
+### 6.4 方法学备注
+
+- 跨数据集评测靠 `scripts/run_trivia_transfer.sh`。TriviaQA 的 2534 篇 latent 在 **gonogo 缓存**里（hotpot 缓存没有）；使用前验证了两份缓存的协议字段逐项相同（同 checkpoint、`rate16`、m=8、float16、`doc_max_length 128`），故 latent 可互换，换缓存不会被误读成迁移效应。
+- `--doc_control` 在这个基准上不是可选项：不带错配地板，71.95 这个数字无法解读。
+- 各运行按**自己的** `max_budget` 评测（P 是 8，残差臂是 80）。两个标签都不做截断，第一轮已验证 P@B=8 与 R@B=80 逐题 2000/2000 相同，所以不是不对等的对比。
+
+---
+
+## 7. 可以说和不可以说
 
 **可以说：**
 
 - 恒等初始化在两轮、两份缓存下都精确成立，实现无误。
 - 训练数据是决定性变量：同一个无模块的对照在两批数据上相差 3.35 分（p=0.00015）。
-- 在 P 未见过的数据上训练，所有臂都优于源 baseline 54.50。
-- 3000 步下，三个 seed 的模块边际**方向一致为正**，均值 +0.73。
+- 在 P 未见过的数据上训练，所有臂在 HotpotQA dev 上都优于源 baseline 54.50。
+- **这个提升以跨域能力为代价**：同一批权重在 TriviaQA 上六个臂全部低于源 P，全部显著（p ≤ 0.02）。
+- 3000 步、HotpotQA 上，三个 seed 的模块边际**方向一致为正**，均值 +0.73。
 
 **不可以说：**
 
-- **不能说残差模块已被证明有效。**其边际在 9000 步为 −0.05（p=1.00），在 3000 步最好的 seed 上也只有 p=0.084，n=3 无法确立。
-- **不能用 57.35 代表方法。**它是三 seed 中最有利的一次抽样，均值为 56.08。
+- **不能说残差模块已被证明有效。**边际在 9000 步为 −0.05（p=1.00），在 TriviaQA 上为 −0.13，在 3000 步最好的 seed 上也只有 p=0.084，n=3 无法确立。
+- **不能用 57.35 代表方法。**它是三 seed 中最有利的一次抽样，均值为 56.08；且这个 seed 恰是迁移时唯一反号的那个。
 - 不能把 `joint@3k`(57.35) 与 `p-control@9k`(56.10) 相比——步数不配平，且方向恰好有利于本方法。
 - 不能沿用第一轮"继续训练本身有害"的无限定表述。
+- **不能把 TriviaQA 上证据值的升高当成收益。**主指标是跌的；参见第 6.2 节与 D4/D5 的先例。
+- 不能把 TriviaQA 的退化**单独**归因于数据集偏移——输入长度同时变了（44 vs 80 个 latent），两者未分离。
 
-**没有测过的：**错配文档控制（第二轮未跑）、test 5405 条（保留未用）、在线时延、预算缩减、多 seed 的 9000 步。KD 未启用，`src/distill.py` 的 FP32 `1-1e-9` 尾部问题仍未修复。
+**没有测过的：**HotpotQA 上的错配文档控制（第二、三轮未跑，第三轮只在 TriviaQA 上跑了）、test 5405 条（保留未用）、在线时延、预算缩减、多 seed 的 9000 步、TriviaQA 上的任何训练。KD 未启用，`src/distill.py` 的 FP32 `1-1e-9` 尾部问题仍未修复。
 
 ---
 
-## 7. 下一步
+## 8. 下一步
 
-唯一能让模块结论落地的是**补 seed**：3000 步、留出数据，joint 与 p-control 各补 45/46/47，共 6 个运行，4 卡约 1.5 小时。到 6 个 seed 若均值维持 0.7 左右，"R 在短训练区间有效"是一个受限但站得住的发现；若均值向 0 收敛，这条路结束。
+**第三轮之前的建议是补 seed 45/46/47 去争 +0.73 的显著性。第三轮之后，这个建议的性价比明显下降。**
 
-在此之前不建议调 R 的超参：效应量（0.73）小于各臂自身的 seed 波动（±1.1），任何超参对比都会被噪声淹没。
+即便补到 6 个 seed 做出 p<0.05，能声称的也只是"一个只存在于 HotpotQA、只存在于 3000 步窗口、换数据集即消失（−0.13）的效应"。9000 步为 −0.05（p=1.00），TriviaQA 为 −0.13，两个独立方向都指向零。
+
+**本阶段真正站得住的结果不在模块，在数据上，而且两个都显著：**
+
+1. 同一个无模块对照，只换训练数据，从 −1.60（p=0.044）翻到 +1.75（p=0.030），摆动 +3.35（p=0.00015）。
+2. 在留出数据上继续训练，HotpotQA 涨 0.85~1.58，TriviaQA 全线跌 1.55~3.60（六个臂全部 p ≤ 0.02）。
+
+合起来是一句不依赖 R 是否有效的话：**在压缩上下文 RAG 里继续训练解码器，收益高度依赖该数据是否已被拟合，且是以跨域能力为代价换取的。**两个方向都是单变量对照。
+
+若仍要给模块一个了断，比补 seed 更省的做法是先问它**是否只对多跳有用**（第 6.1 节留下的那个未排除解释）：在 HotpotQA 内按 `hop_type` 拆 bridge / comparison 看边际是否集中在某一类。这是对既有逐题预测的再分析，**零额外机时**。
+
+不建议调 R 的超参：效应量（0.73）小于各臂自身的 seed 波动（±1.1），任何超参对比都会被噪声淹没。
 
 ---
 
@@ -193,8 +265,12 @@ seed 42 是三个 seed 中**两臂同时取得最高分**的那个，因此下�
 第二轮  /data02/quro/runs/residual_ext_{init,train,joint,p-control}_s42/
         /data02/quro/runs/residual_ext_{joint,p-control}_s{43,44}/
         /data02/quro/runs/residual_ext_{joint,p-control}_9k_s42/
+第三轮  /data02/quro/runs/hp2d0_P_trivia/
+        /data02/quro/runs/residual_ext_{joint,p-control}_s{42,43,44}_trivia/
 数据    /data02/quro/data/hotpot_full/{train.jsonl,train_heldout.jsonl,corpus.jsonl}
-缓存    /data02/quro/cache/hotpotfull-pisco-r16   509315 篇
+        /data02/quro/data/trivia/queries.jsonl                     2000 题
+缓存    /data02/quro/cache/hotpotfull-pisco-r16   509315 篇（前两轮）
+        /data02/quro/cache/gonogo-pisco-r16      263890 篇（第三轮，含全部 trivia 文档）
 ```
 
-每个运行目录含 `config.json`、`commit.txt`、`worktree.diff`、`console.log`、`train_log.jsonl`、逐题 `predictions_dev_D0_B80.json`、`result.json`；训练运行另含 `checkpoint_{last,best}.pt` 与 `baseline_identity.json`。第二轮的 `config.json` 内含 `data_deviation`，记录相对源 P 运行改动的数据路径。
+每个运行目录含 `config.json`、`commit.txt`、`worktree.diff`、`console.log`、`train_log.jsonl`、逐题 `predictions_dev_D0_B80.json`、`result.json`；训练运行另含 `checkpoint_{last,best}.pt` 与 `baseline_identity.json`。第二轮的 `config.json` 内含 `data_deviation`，记录相对源 P 运行改动的数据路径。第三轮为纯评测运行，逐题文件是 `predictions_trivia_D0_B{8,80}.json`，无 checkpoint。
