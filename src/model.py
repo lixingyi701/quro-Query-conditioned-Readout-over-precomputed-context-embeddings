@@ -30,6 +30,7 @@ from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
                      PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
 from .refinement import PiscoResidualReadout
+from .query_writeback import PiscoQueryWritebackReadout
 
 
 class TokenEmbeddingQueryEncoder(nn.Module):
@@ -337,6 +338,11 @@ class QuROModel(nn.Module):
             self.readout = PiscoDirectReadout(self.cache_hidden, self.d_gen)
         elif r.kind == "pisco_residual":
             self.readout = PiscoResidualReadout(
+                self.cache_hidden, self.d_gen, query_encoder.out_dim,
+                d_readout=r.d_readout, num_heads=r.num_heads,
+                num_blocks=r.num_blocks, dropout=r.dropout)
+        elif r.kind == "pisco_query_writeback":
+            self.readout = PiscoQueryWritebackReadout(
                 self.cache_hidden, self.d_gen, query_encoder.out_dim,
                 d_readout=r.d_readout, num_heads=r.num_heads,
                 num_blocks=r.num_blocks, dropout=r.dropout)
@@ -799,6 +805,12 @@ class QuROModel(nn.Module):
 
     def load(self, path, strict=False, optimizer=None, scheduler=None):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        saved_kind = ckpt.get("config", {}).get("readout", {}).get("kind")
+        current_kind = self.cfg.readout.kind
+        if "pisco_query_writeback" in {saved_kind, current_kind} and saved_kind != current_kind:
+            raise ValueError(
+                f"readout kind mismatch: checkpoint={saved_kind!r}, model={current_kind!r}; "
+                "RQ cannot load R/QuRO weights; use --baseline_run for a fresh P initialisation")
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)

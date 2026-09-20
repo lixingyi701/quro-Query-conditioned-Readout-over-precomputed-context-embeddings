@@ -113,7 +113,7 @@ def build_args():
                          "checkpoint and a replacement cache must encode the "
                          "same way and cover the baseline's documents")
 
-    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "pisco_residual"], default=None)
+    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "pisco_residual", "pisco_query_writeback"], default=None)
     ap.add_argument("--output_query_mode",
                     choices=["agnostic", "agnostic_matched", "add", "film", "concat", "xattn"],
                     default=None)
@@ -370,7 +370,10 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "version": config_module.__version__,
         "tag": args.tag,
         "readout": cfg.readout.kind,
-        "output_query_mode": cfg.readout.output_query_mode,
+        "output_query_mode": (None if cfg.readout.kind == "pisco_query_writeback"
+                              else cfg.readout.output_query_mode),
+        "attention_axes": ("batch,head,query_token,latent"
+                           if cfg.readout.kind == "pisco_query_writeback" else None),
         "cosine_prior": cfg.readout.cosine_prior,
         "arm": arm_label(cfg),
         # Not cosmetic: under shared_current the query representation drifts with
@@ -390,7 +393,7 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "offline_compr_rate": cache.metadata.compr_rate,
         "baseline_initialization": getattr(model, "baseline_initialization", None),
         "budget_semantics": ("all_cached_latents" if cfg.readout.kind in
-                             {"pisco_direct", "pisco_residual"} else "output_budget"),
+                             {"pisco_direct", "pisco_residual", "pisco_query_writeback"} else "output_budget"),
         "metrics": {},
     }
     original_mode = model.decoder_input_mode
@@ -452,8 +455,8 @@ def main():
         cfg.readout.kind = "pisco_residual"
         cfg.readout.cosine_prior = False
         cfg = apply_overrides(cfg, args)
-        if cfg.readout.kind not in {"pisco_direct", "pisco_residual"}:
-            raise SystemExit("baseline experiment supports only P and R")
+        if cfg.readout.kind not in {"pisco_direct", "pisco_residual", "pisco_query_writeback"}:
+            raise SystemExit("baseline experiment supports only P, R and RQ")
         if cfg.decoder.input_mode != "D0" or cfg.decoder.query_text_dropout != 0:
             raise SystemExit("baseline experiment requires D0 and query_text_dropout=0")
         if args.teacher_logits or args.kd_weight:
@@ -509,7 +512,7 @@ def main():
         args.doc_control, corpus)
     print(f"[data] train={len(train_set)} device={device}")
 
-    if baseline_checkpoint and cfg.readout.kind == "pisco_residual":
+    if baseline_checkpoint and cfg.readout.kind in {"pisco_residual", "pisco_query_writeback"}:
         from src.refinement import verify_pisco_identity
         # No shuffled loader iteration: the check must not consume training RNG.
         state = torch.random.get_rng_state()

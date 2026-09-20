@@ -17,9 +17,12 @@ from test_shapes import build_workspace
 
 
 class ResidualContracts(unittest.TestCase):
+    readout_class = PiscoResidualReadout
+    arm = "R"
+
     def test_identity_gradients_query_and_padding(self):
         torch.manual_seed(17)
-        module = PiscoResidualReadout(16, 16, 12, d_readout=16, num_heads=4)
+        module = self.readout_class(16, 16, 12, d_readout=16, num_heads=4)
         z = torch.randn(2, 3, 2, 16)
         mask = torch.tensor([[True, True, True], [True, False, True]])
         q = torch.randn(2, 4, 12)
@@ -79,13 +82,13 @@ class ResidualContracts(unittest.TestCase):
                 _, p_result = p.qa_loss(batch, return_logits=True)
 
             rcfg = copy.deepcopy(cfg)
-            apply_arm(rcfg, 'R')
+            apply_arm(rcfg, self.arm)
             rcfg.generator.lora_init = 'frozen'
             rcfg.revalidate()
             torch.manual_seed(99)
             _, r = build_model(rcfg, cache_hidden=h)
             initialize_from_pisco(r, source)
-            self.assertEqual(arm_label(rcfg), 'R')
+            self.assertEqual(arm_label(rcfg), self.arm)
             self.assertTrue(verify_pisco_identity(r, batch)['identity'])
             r.eval()
             with torch.no_grad():
@@ -142,7 +145,7 @@ class ResidualContracts(unittest.TestCase):
 
             def fresh(train_file, cache):
                 rcfg = copy.deepcopy(cfg)
-                apply_arm(rcfg, 'R')
+                apply_arm(rcfg, self.arm)
                 rcfg.generator.lora_init = 'frozen'
                 rcfg.data.train_file = train_file
                 rcfg.data.cache_dir = cache

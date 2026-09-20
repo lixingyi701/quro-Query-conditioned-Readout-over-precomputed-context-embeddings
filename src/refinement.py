@@ -17,6 +17,7 @@ from torch import nn
 
 from .baselines import _flatten, PiscoDirectReadout
 from .perceiver import AttentionBlock
+from .query_writeback import PiscoQueryWritebackReadout
 
 # Settings that decide whether two caches hold the same kind of vector. A latent
 # produced by a different compressor, rate or dtype is not a drop-in for P's, and
@@ -196,8 +197,8 @@ def initialize_from_pisco(model, checkpoint, allow_data_change=False):
 @torch.no_grad()
 def verify_pisco_identity(model, batch):
     """Compare latent/mask/answer logits with P on the same decoder in eval mode."""
-    if not isinstance(model.readout, PiscoResidualReadout):
-        raise ValueError("identity check requires pisco_residual")
+    if not isinstance(model.readout, (PiscoResidualReadout, PiscoQueryWritebackReadout)):
+        raise ValueError("identity check requires an identity residual readout")
     readout, training = model.readout, model.training
     model.eval()
     try:
