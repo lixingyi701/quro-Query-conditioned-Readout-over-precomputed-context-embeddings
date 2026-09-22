@@ -105,7 +105,8 @@ def build_pisco_stack(cfg) -> GeneratorStack:
 
     checkpoint = cfg.generator.name_or_path or paths.PISCO_MISTRAL
     device = cfg.generator.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    cocom = build_generator(checkpoint, device=device, dtype=cfg.generator.dtype)
+    cocom = build_generator(checkpoint, device=device, dtype=cfg.generator.dtype,
+                            attn_implementation=cfg.generator.attn_implementation)
 
     lm = cocom.decoder
     # PISCO ships two adapters; only the decoder one belongs on the generation

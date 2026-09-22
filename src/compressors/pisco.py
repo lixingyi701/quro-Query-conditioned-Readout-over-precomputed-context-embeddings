@@ -63,8 +63,16 @@ def ensure_local_base(checkpoint_dir: str, base_model: Optional[str] = None) -> 
     return base_model
 
 
-def load_cocom(checkpoint: str, device: str = "cuda", dtype: str = "bfloat16"):
-    """Load a frozen PISCO/COCOM checkpoint from the vendored implementation."""
+def load_cocom(checkpoint: str, device: str = "cuda", dtype: str = "bfloat16",
+               attn_implementation: Optional[str] = None):
+    """Load a frozen PISCO/COCOM checkpoint from the vendored implementation.
+
+    ``attn_implementation`` is normally left alone, so the decoder runs on
+    whatever backend transformers selects.  The attention diagnostics
+    (``src/infeasibility.py``) need ``"eager"``, because FlashAttention and the
+    fused SDPA kernels never materialise the attention weights -- let alone the
+    pre-softmax QK logits -- so there is nothing to read out of them.
+    """
     paths.require(checkpoint, "compressor checkpoint")
     ensure_local_base(checkpoint)
 
@@ -79,7 +87,8 @@ def load_cocom(checkpoint: str, device: str = "cuda", dtype: str = "bfloat16"):
         raise FileNotFoundError(
             f"{checkpoint} contains neither modelling_pisco.py nor modeling_cocom.py")
 
-    model = COCOM.from_pretrained(checkpoint)
+    kwargs = {"attn_implementation": attn_implementation} if attn_implementation else {}
+    model = COCOM.from_pretrained(checkpoint, **kwargs)
     model = model.to(device=device, dtype=DTYPES[dtype])
     model.eval()
     for parameter in model.parameters():
@@ -145,7 +154,8 @@ def build(checkpoint: Optional[str] = None, device: str = "cuda",
 
 
 def build_generator(checkpoint: Optional[str] = None, device: str = "cuda",
-                    dtype: str = "bfloat16"):
+                    dtype: str = "bfloat16",
+                    attn_implementation: Optional[str] = None):
     """Load the same checkpoint to be used as QuRO's generator.
 
     Returns the full ``COCOM`` object: ``.decoder`` is Mistral plus the trained
@@ -154,7 +164,7 @@ def build_generator(checkpoint: Optional[str] = None, device: str = "cuda",
     and QuRO share backbone, prompt and LoRA initialisation exactly.
     """
     checkpoint = checkpoint or paths.PISCO_MISTRAL
-    return load_cocom(checkpoint, device, dtype)
+    return load_cocom(checkpoint, device, dtype, attn_implementation)
 
 
 class CocomV1Compressor(FrozenDocumentCompressor):

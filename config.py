@@ -195,6 +195,11 @@ class GeneratorConfig:
     # Slots per document block in the prompt.  PISCO exposes it; COCOM v1 does
     # not, and its config has no doc_max_length to derive it from.
     n_mem_tokens: Optional[int] = None
+    # None leaves transformers' own choice in place, which is what every training
+    # and eval run uses.  "eager" is only for the attention diagnostics: the fused
+    # backends never materialise attention weights or pre-softmax QK logits, so
+    # there is nothing for src/infeasibility.py to read.
+    attn_implementation: Optional[str] = None
 
     toy_n_layer: int = 4
     toy_n_head: int = 4
