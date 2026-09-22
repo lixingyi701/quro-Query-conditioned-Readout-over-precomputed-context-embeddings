@@ -441,6 +441,59 @@ mass 比值 **1.288**、density 比值 **2.923**、qk gap **+2.556**——它比
 
 <!-- PENDING: levelA-intervene-lowalpha -->
 
+### 5.2 Adapter 消融：本轮最尖锐的一个结果
+
+指示 §12 第 3 行给的后续方向包含"检查 adapter / 训练目标"。PISCO 的 `decoder_adapter`
+只在「memory slot + 问题 → 简短答案」上训练过，所以把它关掉（`--disable_adapter`）
+直接检验：压制是**这个 LoRA 的训练目标**造成的，还是压缩表示的内在性质。
+
+> **口径说明**：PISCO 把 fine-tune 过的 `embed_tokens` 与 `lm_head` 作为**基座权重**
+> 发布（`decoder_first_last_layers.pth` 只含这两个 key），所以 `disable_adapters()`
+> 关掉的只是 LoRA。"adapter off" = PISCO 的 embedding/lm_head + 原版 Mistral
+> transformer 层 + 无 LoRA，**不是**出厂 Mistral。生成结果是通顺英文（见下），模型没坏。
+
+同一批 40 篇文档、同一批 nonce、同一套 prompt，只切 LoRA：
+
+| conflict 条件 | `leading`（adapter **off**） | `leading`（adapter **on**） | **Δ = LoRA 带来的指令遵循** |
+| --- | ---: | ---: | ---: |
+| `none`（无背景块） | 0.725 | 1.000 | +0.275 |
+| `raw`（原文） | **0.000** | **0.650** | **+0.650** |
+| `zero`（空槽位） | 0.075 | 0.625 | **+0.550** |
+| `mismatch`（错配 latent） | 0.300 | 0.250 | **−0.050** |
+| `memory`（正确 latent） | 0.350 | 0.225 | **−0.125** |
+
+**LoRA 在每一个"槽位里没有 PISCO latent"的条件上都带来 +0.55 ~ +0.65 的指令遵循能力；
+在两个"槽位里有 PISCO latent"的条件上带来的是 0 到负。**
+
+memory − raw 的符号因此翻转：
+
+| | memory − raw（`leading`） |
+| --- | --- |
+| adapter **on** | **−0.425 [−0.575, −0.275]** |
+| adapter **off** | **+0.350 [+0.200, +0.500]** |
+
+两个 CI 都不含 0，方向相反。
+
+同一批 run 的重建能力说明 adapter 关掉后 memory 通道基本读不出来了
+（ROUGE-L 0.616 → **0.235**，逼近 mismatch 的 0.105），所以这**不是单变量干预**：
+memory 条件同时在"可读性"和"压制"两个轴上变化，不能把 Δ 全部归给 LoRA。
+能确立的是更弱但更干净的一句：
+
+> **PISCO 的 decoder LoRA 赋予了一种指令遵循能力（raw 0% → 65%，空槽位 7.5% → 62.5%），
+> 而这种能力在槽位装着 PISCO latent 时完全不迁移（22.5% / 25%）。**
+
+adapter-off 下的生成样例（通顺，拒绝方式与 adapter-on 同型）：
+
+```
+raw/conflict     I'm sorry, but I cannot output the string "QMBWWBQDJMZX" without any
+                 context or reason. The given background information about the Liber
+                 Paradisus does not provide any connection to this str...
+memory/conflict  I'm sorry, but I cannot output a specific string without any context or
+                 instruction. The given background information does not provide any
+                 relevant information to generate the string "QMBWWB...
+none/conflict    QMBWWBQDJMZX
+```
+
 ---
 
 ## 6. 结论落在指示 §12 决策树的哪一格
@@ -505,14 +558,15 @@ mass 比值 **1.288**、density 比值 **2.923**、qk gap **+2.556**——它比
    子空间上再回写。目标是回答"能不能在保留文档信息的前提下移走那个方向"——
    如果不能，SeleCom 的 *infeasible* 就在一个**它自己没说的意义上**是对的。
 
-2. **失败是 decoder 的模式切换，不是注意力捕获。** 全部对照都指向同一件事：
-   `zero ≈ raw`（62.5% vs 65%）、`mismatch ≈ memory`（25.0% vs 22.5%）——起作用的
-   既不是槽位、也不是文档内容，而是槽位里装着 PISCO 分布的向量这一事实本身。
-   PISCO 的 decoder LoRA 只在"memory slot + 问题 → 简短答案"上训练过，一旦看到这种输入
-   就把 conflict 指令**重新解释成关于文档的问题**（失败文本本身就是这个形状）。
-   可检验预测：用**未加载 `decoder_adapter`** 的裸 Mistral 读同一批 latent，如果压制
-   显著减弱，那么这是 adapter 的训练目标造成的，不是压缩表示的内在性质——
-   这条直接指向指示 §12 第 3 行给的"检查 adapter / 训练目标"。
+2. **指令遵循是 decoder LoRA 给的能力，而这个能力不迁移到 memory 通道**（§5.2）。
+   全部对照都指向同一件事：`zero ≈ raw`（62.5% vs 65%）、
+   `mismatch ≈ memory`（25.0% vs 22.5%）——起作用的既不是槽位、也不是文档内容，
+   而是槽位里装着 PISCO 分布的向量这一事实本身；而 adapter 消融进一步显示，
+   LoRA 给 raw/zero 加了 +0.65/+0.55 的指令遵循，给 memory/mismatch 加的是 0 到负。
+   下一步是把这句话做成单变量的：在**保持 memory 可读性不变**的前提下改变 adapter
+   （例如只关掉部分层的 LoRA，或在 PISCO 训练数据里混入 instruction-following 样本再
+   重训 adapter），看压制是否随之移动。这直接落在指示 §12 第 3 行给的
+   "检查 adapter / 训练目标"。
 
 3. **回到 D1 平价这个真问题。** §4.2 显示，在 `P` baseline 的**实际服务配置**下
    （K=10、PISCO prompt、真实问题），conflict 失败相对 raw **没有边际**
