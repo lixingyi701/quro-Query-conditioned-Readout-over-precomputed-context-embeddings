@@ -439,6 +439,15 @@ def main():
     ap.add_argument("--queries", default=None)
     ap.add_argument("--skip_generation", action="store_true",
                     help="mechanism statistics only; behavioural results are then absent")
+    ap.add_argument("--disable_adapter", action="store_true",
+                    help="run the bare Mistral backbone with PISCO's decoder LoRA "
+                         "switched off.  The adapter was trained only on "
+                         "'memory slots + question -> short answer', so this asks "
+                         "whether the instruction suppression is the adapter's "
+                         "training objective rather than a property of the "
+                         "compressed representation (§12 row 3)")
+    ap.add_argument("--intervene_alphas", default="0.25,0.5,0.75",
+                    help="scale factors for the --level A-intervene sweep")
     ap.add_argument("--prompt_style", choices=list(inf.PROMPT_STYLES),
                     default="pisco_question",
                     help="pisco_question keeps PISCO's trained scaffolding (and is "
@@ -483,6 +492,13 @@ def main():
     if lm.config._attn_implementation != "eager":
         raise SystemExit(f"decoder loaded with {lm.config._attn_implementation!r}; "
                          "the diagnostics need eager attention")
+    if args.disable_adapter:
+        # The resized embedding table stays -- <MEM*>/<SEP> still have their
+        # trained vectors, and the latents are still PISCO's.  Only the LoRA that
+        # was fitted on the compressed-QA task is removed, so what changes is the
+        # decoder's learned behaviour, not the input.
+        lm.disable_adapters()
+        print("[generator] decoder_adapter disabled: bare Mistral backbone")
 
     corpus_path = args.corpus or os.path.join(os.path.dirname(cfg.data.train_file),
                                               "corpus.jsonl")
@@ -499,7 +515,8 @@ def main():
     # -- samples and conditions -------------------------------------------------
     if args.level.startswith("A"):
         samples = level_a_samples(tokenizer, corpus, cache, args.rows, rng)
-        conditions = (inf.intervention_conditions() if args.level == "A-intervene"
+        alphas = [float(x) for x in args.intervene_alphas.split(",") if x.strip()]
+        conditions = (inf.intervention_conditions(alphas) if args.level == "A-intervene"
                       else inf.level_a_conditions())
         max_new_tokens = args.max_new_tokens or 192
     else:
@@ -592,6 +609,7 @@ def main():
                   "base_model": paths.MISTRAL_PATH,
                   "dtype": cfg.generator.dtype,
                   "attn_implementation": lm.config._attn_implementation,
+                  "adapter_disabled": bool(args.disable_adapter),
                   "adapter": getattr(lm, "active_adapters", lambda: None)()
                   if callable(getattr(lm, "active_adapters", None))
                   else getattr(lm, "active_adapter", None),
