@@ -858,8 +858,24 @@ def summarise(examples: Sequence[Dict]) -> Dict[str, object]:
             "memory/reconstruct", "none/reconstruct", "nll.nll"),
         "qa_memory_vs_mismatch_nll": paired("memory/qa", "mismatch/qa", "nll.nll"),
         "qa_memory_vs_none_nll": paired("memory/qa", "none/qa", "nll.nll"),
+        "reconstruct_memory_vs_mismatch_rouge": paired(
+            "memory/reconstruct", "mismatch/reconstruct", "metrics.rouge_l"),
+        "reconstruct_memory_vs_none_rouge": paired(
+            "memory/reconstruct", "none/reconstruct", "metrics.rouge_l"),
+        "qa_memory_vs_mismatch_substring": paired(
+            "memory/qa", "mismatch/qa", "metrics.substring"),
+        "qa_memory_vs_none_substring": paired("memory/qa", "none/qa", "metrics.substring"),
     }
     summary["conflict_contrast"] = {
+        # The headline pairing: same decoder, same instruction, same nonce, the
+        # document representation the only difference.
+        "memory_vs_raw_leading": paired("memory/conflict", "raw/conflict", "metrics.leading"),
+        "memory_vs_zero_leading": paired("memory/conflict", "zero/conflict", "metrics.leading"),
+        "memory_vs_none_leading": paired("memory/conflict", "none/conflict", "metrics.leading"),
+        "mismatch_vs_memory_leading": paired(
+            "mismatch/conflict", "memory/conflict", "metrics.leading"),
+        "memory_vs_raw_copied_span": paired(
+            "memory/conflict", "raw/conflict", "metrics.longest_copied_span"),
         "memory_vs_raw_nonce_nll": paired("memory/conflict", "raw/conflict", "nll.nll"),
         "memory_vs_zero_nonce_nll": paired("memory/conflict", "zero/conflict", "nll.nll"),
         "memory_vs_none_nonce_nll": paired("memory/conflict", "none/conflict", "nll.nll"),
