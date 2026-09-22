@@ -144,6 +144,15 @@ def test_manifest(tokenizer):
             check(f"[{tag}] at most one token crosses a boundary",
                   len(variant.straddling_tokens) <= 1,
                   f"straddling={variant.straddling_tokens}")
+            # The straddling token spells "Background", and it belongs with the
+            # delimiter it names rather than with the space in front of it.
+            start, end = variant.spans["document_delimiter"]
+            check(f"[{tag}] the Background marker is in document_delimiter",
+                  "Background" in tokenizer.decode(variant.input_ids[start:end]),
+                  repr(tokenizer.decode(variant.input_ids[start:end])))
+            head = tokenizer.decode(variant.input_ids[slice(*variant.spans["prefix"])])
+            check(f"[{tag}] prefix does not swallow the Background marker",
+                  "Background" not in head, repr(head[-24:]))
 
     # A boundary with real content on both sides is still refused.
     raised = False

@@ -264,18 +264,20 @@ def token_groups(tokenizer, rendered: RenderedPrompt,
                  max_prompt_tokens: int = 4096) -> TokenGroups:
     """Convert character spans to token spans through the offset mapping.
 
-    Each *token* is assigned to the group its first character falls in.  That is
-    what makes the result a partition by construction -- contiguous, gap-free and
-    exhaustive -- rather than something to be checked afterwards, and it is why
-    the same code works whether or not a group boundary happens to coincide with
-    a token boundary.
+    Each *token* is assigned to the group its first **non-whitespace** character
+    falls in.  That makes the result a partition by construction -- contiguous,
+    gap-free and exhaustive -- rather than something to be checked afterwards,
+    and it is why the same code works whether or not a group boundary happens to
+    coincide with a token boundary.
 
-    The awkward case is real and it is not hypothetical: with no system prompt
-    the chat template emits ``<s> [INST] Background:``, and SentencePiece merges
-    the space into ``▁Background``, so the prefix/delimiter boundary lands
-    mid-token.  Attributing that token to the prefix costs one space.  A token
-    straddling a boundary with *non-whitespace* on both sides would cost real
-    content, so that is still an error.
+    The awkward case is real and not hypothetical: the chat template emits
+    ``[INST] Background:``, and SentencePiece merges the preceding space into
+    ``▁Background``, so the prefix/delimiter boundary lands mid-token.  Keying on
+    the first non-whitespace character puts that token with the word it spells
+    rather than with the space in front of it; keying on the first character
+    would file ``Background`` under ``prefix``.  A token whose *content*
+    characters fall in two different groups would cost real text either way, so
+    that is an error.
     """
     if not getattr(tokenizer, "is_fast", False):
         raise ValueError("a fast tokenizer is required: the group spans come from "
@@ -293,15 +295,18 @@ def token_groups(tokenizer, rendered: RenderedPrompt,
                if name != "output_history" and name in rendered.char_spans]
     bounds = [rendered.char_spans[name] for name in present]
 
-    owner: List[int] = []
-    for start, _ in offsets:
+    def group_of(char_index: int) -> int:
         index = 0
         for i, (a, b) in enumerate(bounds):
-            if a <= start < b or (a == b == start):
+            if a <= char_index < b or (a == b == char_index) or char_index >= b:
                 index = i
-            elif start >= b:
-                index = i
-        owner.append(index)
+        return index
+
+    owner: List[int] = []
+    for start, stop in offsets:
+        content = next((c for c in range(start, stop)
+                        if not rendered.text[c].isspace()), start)
+        owner.append(group_of(content))
 
     spans: Dict[str, Tuple[int, int]] = {}
     for i, name in enumerate(present):
@@ -318,19 +323,15 @@ def token_groups(tokenizer, rendered: RenderedPrompt,
 
     straddling = []
     for t, (a, b) in enumerate(offsets):
-        crossed = [name for i, name in enumerate(present)
-                   if a < bounds[i][1] < b or a < bounds[i][0] < b]
-        if not crossed:
+        touched = {group_of(c) for c in range(a, b)}
+        if len(touched) < 2:
             continue
-        for name in crossed:
-            edge = bounds[present.index(name)]
-            for cut in (edge[0], edge[1]):
-                if a < cut < b and rendered.text[a:cut].strip() and \
-                        rendered.text[cut:b].strip():
-                    raise ValueError(
-                        f"token {t} ({rendered.text[a:b]!r}) straddles the "
-                        f"{name!r} boundary at character {cut} with content on "
-                        "both sides; the group assignment would move real text")
+        content = {group_of(c) for c in range(a, b) if not rendered.text[c].isspace()}
+        if len(content) > 1:
+            raise ValueError(
+                f"token {t} ({rendered.text[a:b]!r}) spans the groups "
+                f"{sorted(present[i] for i in content)} with content in each; "
+                "assigning it to one of them would move real text between groups")
         straddling.append(t)
 
     groups = TokenGroups(input_ids=input_ids, spans=spans, text=rendered.text,
