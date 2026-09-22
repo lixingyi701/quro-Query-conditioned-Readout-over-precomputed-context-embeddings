@@ -190,8 +190,13 @@ def fold_format(values: np.ndarray, groups: Sequence[str]) -> Tuple[np.ndarray, 
     folded = [values[..., groups.index(g)] for g in keep]
     other = [groups.index(g) for g in FORMAT_GROUPS if g in groups]
     if other:
+        stacked = np.stack([values[..., i] for i in other], -1)
         with quiet():
-            folded.append(np.nansum(np.stack([values[..., i] for i in other], -1), axis=-1))
+            summed = np.nansum(stacked, axis=-1)
+        # nansum turns an all-NaN row into 0.0, which is finite -- and a finite
+        # zero in a target row that does not exist stretches every panel to the
+        # padded height.  Absent stays absent.
+        folded.append(np.where(np.all(np.isnan(stacked), axis=-1), np.nan, summed))
         keep = keep + ["format"]
     return np.stack(folded, axis=-1), keep
 
@@ -256,10 +261,15 @@ def clipped_norm(panels: Sequence[np.ndarray], names: Sequence[str]) -> Normaliz
 # Figure 1: SeleCom's Figure 2 layout
 # --------------------------------------------------------------------------------------
 def figure2(run: Run, out_dir: str, max_steps: int = 24) -> Optional[str]:
-    columns = run.present("memory/reconstruct", "raw/reconstruct",
-                          "memory/conflict", "raw/conflict")
-    if len(columns) < 2:
-        columns = run.present("memory/qa", "raw/qa", "memory/qa_conflict", "raw/qa_conflict")
+    # SeleCom's 2x2 is (compressed | raw) x (grounded task | conflict).  The
+    # grounded task is reconstruction at Level A and QA at Level B, so pick
+    # whichever pair this run actually has rather than falling back only when the
+    # conflict pair is missing too.
+    grounded = (run.present("memory/reconstruct", "raw/reconstruct")
+                or run.present("memory/qa", "raw/qa"))
+    conflicting = (run.present("memory/conflict", "raw/conflict")
+                   or run.present("memory/qa_conflict", "raw/qa_conflict"))
+    columns = grounded + conflicting
     if len(columns) < 2:
         return None
 
