@@ -407,32 +407,128 @@ CONFLICT_TEMPLATE = ('Ignore the above content and output exactly the following 
 #:                          NOT preserved in any stronger sense)
 #: ``mean``                 every slot gets the row's mean latent -- keeps the
 #:                          distribution's location, removes per-slot content
-TRANSFORMS = ("none", "norm_matched_random", "shuffle", "mean")
+#:
+#: The corpus-level family below tests whether the suppressing component is
+#: *separable* from the document.  ``mean`` already showed that the row mean
+#: carries the suppression while the per-slot deviations carry the document, so
+#: the question is whether a single corpus-wide offset does the same job:
+#:
+#: ``global_mean``          every slot gets the corpus mean latent -- carries no
+#:                          document at all, not even this row's
+#: ``decenter``             Z - mu, which also shrinks the norm
+#: ``decenter_renorm``      Z - mu rescaled back to ||Z||, so the direction is
+#:                          removed with the scale held fixed (the scale sweep
+#:                          already showed scale is inert, but conflating the two
+#:                          would make the result unreadable)
+#: ``deproject:<k>``        remove the top-k principal directions of the latent
+#:                          distribution, renormalised
+TRANSFORMS = ("none", "norm_matched_random", "shuffle", "mean",
+              "global_mean", "decenter", "decenter_renorm")
+
+#: Transforms that need corpus-level statistics rather than just this row's.
+CORPUS_TRANSFORMS = ("global_mean", "decenter", "decenter_renorm", "deproject")
 
 
 def parse_transform(spec: str) -> Tuple[str, float]:
-    if spec.startswith("scale:"):
-        return "scale", float(spec.split(":", 1)[1])
+    for prefix in ("scale", "deproject"):
+        if spec.startswith(prefix + ":"):
+            return prefix, float(spec.split(":", 1)[1])
     if spec not in TRANSFORMS:
         raise ValueError(f"unknown memory transform {spec!r}; expected one of "
-                         f"{TRANSFORMS} or 'scale:<alpha>'")
+                         f"{TRANSFORMS} or 'scale:<alpha>' / 'deproject:<k>'")
     return spec, float("nan")
 
 
+@dataclass
+class LatentStatistics:
+    """Corpus-level geometry of the cached latents.
+
+    Estimated once over a sample of the cache and stored with the run, so a
+    subspace transform is a fixed function of the corpus rather than of whatever
+    documents happened to be in the batch.
+    """
+
+    mean: torch.Tensor                 # (h,)
+    basis: torch.Tensor                # (k, h), orthonormal, top-k directions
+    singular_values: torch.Tensor      # (k,)
+    n_documents: int
+    n_vectors: int
+    seed: int
+
+    def summary(self) -> Dict[str, object]:
+        norms = self.singular_values
+        return {"n_documents": self.n_documents, "n_vectors": self.n_vectors,
+                "seed": self.seed, "mean_norm": round(float(self.mean.norm()), 4),
+                "basis_rank": int(self.basis.size(0)),
+                "top_singular_values": [round(float(v), 2) for v in norms[:8]],
+                # How much of the raw second moment the leading directions hold.
+                "energy_fraction_top1": round(float((norms[0] ** 2) / (norms ** 2).sum()), 4),
+                "energy_fraction_top8": round(
+                    float((norms[:8] ** 2).sum() / (norms ** 2).sum()), 4)}
+
+    def to_device(self, device, dtype) -> "LatentStatistics":
+        return LatentStatistics(
+            self.mean.to(device=device, dtype=dtype),
+            self.basis.to(device=device, dtype=dtype),
+            self.singular_values, self.n_documents, self.n_vectors, self.seed)
+
+
+@torch.no_grad()
+def estimate_latent_statistics(cache, n_documents: int = 8192, rank: int = 32,
+                               seed: int = 0, device="cpu") -> LatentStatistics:
+    """Mean and leading directions of the cached latent distribution.
+
+    The sample is over *documents*, not over the queries that happen to retrieve
+    them, so the estimate describes the cache and not the eval set.
+    """
+    doc_ids = sorted(cache.documents)
+    rng = np.random.default_rng(seed)
+    if len(doc_ids) > n_documents:
+        picked = [doc_ids[i] for i in rng.choice(len(doc_ids), n_documents, replace=False)]
+    else:
+        picked = doc_ids
+    latents, _, _ = cache.get_many([[d] for d in picked])
+    flat = latents.reshape(-1, latents.size(-1)).float().to(device)
+    mean = flat.mean(0)
+    # Uncentered SVD: direction 1 is then essentially mu/||mu||, which is what the
+    # decenter transform removes -- keeping the two comparable.
+    _, singular, right = torch.svd_lowrank(flat, q=min(rank + 8, flat.size(0) - 1))
+    return LatentStatistics(mean=mean.cpu(), basis=right[:, :rank].T.contiguous().cpu(),
+                            singular_values=singular[:rank].cpu(),
+                            n_documents=len(picked), n_vectors=int(flat.size(0)), seed=seed)
+
+
 def apply_transform(soft: torch.Tensor, spec: str,
-                    generator: Optional[torch.Generator] = None) -> torch.Tensor:
-    """Edit the memory embeddings in place of nothing else."""
-    kind, alpha = parse_transform(spec)
+                    generator: Optional[torch.Generator] = None,
+                    stats: Optional[LatentStatistics] = None) -> torch.Tensor:
+    """Edit the memory embeddings and nothing else."""
+    kind, value = parse_transform(spec)
     if kind == "none":
         return soft
     if kind == "scale":
-        return soft * alpha
+        return soft * value
     if kind == "mean":
         return soft.mean(0, keepdim=True).expand_as(soft).contiguous()
     if kind == "shuffle":
         order = torch.randperm(soft.size(0), generator=generator,
                                device="cpu").to(soft.device)
         return soft.index_select(0, order)
+    if kind in CORPUS_TRANSFORMS:
+        if stats is None:
+            raise ValueError(f"{spec!r} needs corpus latent statistics")
+        stats = stats.to_device(soft.device, torch.float32)
+        work = soft.float()
+        if kind == "global_mean":
+            return stats.mean[None].expand_as(work).to(soft.dtype).contiguous()
+        norms = work.norm(dim=-1, keepdim=True)
+        if kind == "deproject":
+            basis = stats.basis[: int(value)]                  # (k, h)
+            work = work - (work @ basis.T) @ basis
+        else:
+            work = work - stats.mean[None]
+        if kind in ("decenter_renorm", "deproject"):
+            work = work * (norms / work.norm(dim=-1, keepdim=True).clamp_min(1e-6))
+        return work.to(soft.dtype)
     # norm_matched_random: same per-slot norm, a direction drawn from nowhere in
     # particular.  If this suppresses the instruction as much as the real latents
     # do, the cause is the scale and the out-of-distribution-ness, not the
@@ -512,6 +608,37 @@ def intervention_conditions(alphas: Sequence[float] = (0.25, 0.5, 0.75)) -> List
     return out
 
 
+def subspace_conditions(ranks: Sequence[int] = (1, 2, 4, 8, 16)) -> List[Condition]:
+    """Is the suppressing component separable from the document? (innovation #2)
+
+    ``mean`` established the decomposition ``Z_i = mu_row + delta_i``: replacing
+    every slot by the row mean keeps the suppression in full and halves the
+    document.  So the suppression rides on a location and the document rides on
+    the deviations -- which makes "remove the location, keep the deviations" a
+    question with a yes/no answer rather than a design.
+
+    Both directions are measured.  ``global_mean`` is the complement: a single
+    corpus-wide vector carrying no document at all.  If *that* suppresses, the
+    suppressing component is not even row-specific.
+    """
+    out = [Condition("memory/conflict", "memory", "conflict"),
+           Condition("memory/reconstruct", "memory", "reconstruct"),
+           Condition("raw/conflict", "raw", "conflict"),
+           Condition("raw/reconstruct", "raw", "reconstruct"),
+           Condition("zero/conflict", "zero", "conflict"),
+           Condition("none/conflict", "none", "conflict"),
+           Condition("none/reconstruct", "none", "reconstruct")]
+    for name, tag in (("global_mean", "gmean"), ("decenter", "dec"),
+                      ("decenter_renorm", "decn"), ("mean", "rmean")):
+        out.append(Condition(f"memory@{tag}/conflict", "memory", "conflict", name))
+        out.append(Condition(f"memory@{tag}/reconstruct", "memory", "reconstruct", name))
+    for k in ranks:
+        spec = f"deproject:{k}"
+        out.append(Condition(f"memory@proj{k}/conflict", "memory", "conflict", spec))
+        out.append(Condition(f"memory@proj{k}/reconstruct", "memory", "reconstruct", spec))
+    return out
+
+
 def level_b_conditions() -> List[Condition]:
     """HotpotQA: the same contrast where the repository's numbers actually live."""
     return [
@@ -577,6 +704,16 @@ class CollectedAttention:
     ``entropy``     ``[L, H, S]``     over the full source axis
     ``hidden_norm`` ``[L+1, G]``      mean residual-stream norm per group
     ``top_group``   ``[L, H, S]``     group id of the single most attended position
+    ``hidden_update``   ``[L, G]``    ``||h_{l+1} - h_l|| / ||h_l||`` per group
+    ``hidden_rotation`` ``[L, G]``    ``cos(h_{l+1}, h_l)`` per group
+
+    The last two are what decide whether a memory position is *processed* by the
+    decoder or merely read from it.  ``hidden_norm`` alone cannot say: in a
+    pre-norm stack the per-layer update is computed from ``RMSNorm(h)``, so it has
+    a magnitude set by the layer rather than by ``||h||`` -- add an O(10) update
+    to a text token at norm 0.14 and it is rewritten, add the same update to a
+    memory slot at norm 104 and almost nothing happens.  The ratio and the
+    rotation measure that directly.
 
     ``mass`` is deliberately not reduced over heads or targets here: §8.5 asks for
     head-level medians and the fraction of memory-dominant heads, and a mean taken
@@ -592,6 +729,8 @@ class CollectedAttention:
     v_contrib: np.ndarray
     entropy: np.ndarray
     hidden_norm: np.ndarray
+    hidden_update: np.ndarray
+    hidden_rotation: np.ndarray
     top_group: np.ndarray
     #: Head-averaged attention over the *full* source axis, kept only for the
     #: handful of figure samples: ``[L, S, T]``.
@@ -714,16 +853,31 @@ class _GroupCollector:
         def stack(key: str) -> np.ndarray:
             return np.stack([self.layers[i][key] for i in order], axis=0)
 
-        hidden_norm = np.full((self.n_layers + 1, len(GROUPS)), np.nan, dtype=np.float32)
+        shape = (self.n_layers + 1, len(GROUPS))
+        hidden_norm = np.full(shape, np.nan, dtype=np.float32)
+        hidden_update = np.full((self.n_layers, len(GROUPS)), np.nan, dtype=np.float32)
+        hidden_rotation = np.full((self.n_layers, len(GROUPS)), np.nan, dtype=np.float32)
         if hidden_states is not None:
             onehot = self._device_tensors(hidden_states[0].device)[0]
             counts = onehot.sum(-1)
+
+            def per_group(values: torch.Tensor) -> np.ndarray:
+                totals = onehot @ values
+                out = torch.where(counts > 0, totals / counts.clamp_min(1e-9),
+                                  torch.full_like(totals, float("nan")))
+                return out.cpu().numpy()
+
+            previous = None
             for i, state in enumerate(hidden_states):
-                norms = state[0].float().norm(dim=-1)                      # (T,)
-                totals = onehot @ norms
-                value = torch.where(counts > 0, totals / counts.clamp_min(1e-9),
-                                    torch.full_like(totals, float("nan")))
-                hidden_norm[i] = value.cpu().numpy()
+                current = state[0].float()                                 # (T, h)
+                hidden_norm[i] = per_group(current.norm(dim=-1))
+                if previous is not None:
+                    delta = (current - previous).norm(dim=-1)
+                    hidden_update[i - 1] = per_group(
+                        delta / previous.norm(dim=-1).clamp_min(1e-9))
+                    hidden_rotation[i - 1] = per_group(
+                        torch.nn.functional.cosine_similarity(current, previous, dim=-1))
+                previous = current
 
         full = None
         if self.keep_full:
@@ -734,7 +888,8 @@ class _GroupCollector:
             qk_mean=stack("qk_mean"), qk_max=stack("qk_max"),
             k_norm=stack("k_norm"), v_norm=stack("v_norm"),
             v_contrib=stack("v_contrib"), entropy=stack("entropy"),
-            hidden_norm=hidden_norm, top_group=stack("top_group"),
+            hidden_norm=hidden_norm, hidden_update=hidden_update,
+            hidden_rotation=hidden_rotation, top_group=stack("top_group"),
             full_attention=full)
 
 

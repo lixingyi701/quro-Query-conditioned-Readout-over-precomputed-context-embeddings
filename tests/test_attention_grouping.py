@@ -261,6 +261,28 @@ def test_grouping_math():
           math.isclose(float(got["entropy"][0, 1]), math.log(6), rel_tol=1e-4))
     check("top attended group is reported", int(got["top_group"][0, 1]) in (0, 2, 5))
 
+    # Per-layer contextualisation: a big residual with a small update barely
+    # moves, which is the whole "frozen outlier" question.
+    big, small = 100.0, 0.1
+    h0 = torch.zeros(1, total, 4)
+    h0[0, :2] = small / 2.0            # prefix: residual of norm 0.1
+    h0[0, 2:5] = big / 2.0             # document: residual of norm 100
+    h0[0, 5] = small / 2.0
+    # The same unit update everywhere, orthogonal to the residual so the rotation
+    # it causes is a pure function of the magnitude ratio.
+    update = torch.tensor([0.5, -0.5, 0.5, -0.5]).expand(1, total, 4).contiguous()
+    collected = collector.finish([h0, h0 + update])
+    prefix = collected.hidden_update[0, 0]
+    document = collected.hidden_update[0, 2]
+    check("identical updates move a small residual far more than a large one",
+          prefix > 20 * document, f"prefix {prefix:.4f} vs document {document:.6f}")
+    check("the large residual barely rotates",
+          collected.hidden_rotation[0, 2] > 0.9999,
+          f"cos = {collected.hidden_rotation[0, 2]:.6f}")
+    check("the small residual rotates a lot",
+          collected.hidden_rotation[0, 0] < 0.99,
+          f"cos = {collected.hidden_rotation[0, 0]:.6f}")
+
 
 # ----------------------------------------------------------------------------
 # 3. The recording attention must be the original
@@ -409,6 +431,55 @@ def test_transforms():
     except ValueError:
         raised = True
     check("a transform on a non-memory condition is refused", raised)
+
+    # Corpus-level transforms: a fixed mean and basis, checked by construction.
+    torch.manual_seed(3)
+    mu = torch.randn(16) * 4.0
+    basis = torch.linalg.qr(torch.randn(16, 4))[0].T.contiguous()      # (4, 16)
+    stats = inf.LatentStatistics(mean=mu, basis=basis,
+                                 singular_values=torch.arange(4, 0, -1).float(),
+                                 n_documents=10, n_vectors=80, seed=0)
+
+    gmean = inf.apply_transform(latents, "global_mean", stats=stats)
+    check("global_mean puts the corpus mean in every slot",
+          torch.allclose(gmean, mu[None].expand_as(latents)))
+
+    dec = inf.apply_transform(latents, "decenter", stats=stats)
+    check("decenter subtracts the corpus mean", torch.allclose(dec, latents - mu[None]))
+    check("decenter changes the norm", not torch.allclose(dec.norm(dim=-1), norms))
+
+    decn = inf.apply_transform(latents, "decenter_renorm", stats=stats)
+    check("decenter_renorm holds the per-slot norm fixed",
+          torch.allclose(decn.norm(dim=-1), norms, rtol=1e-4),
+          f"{decn.norm(dim=-1)[:2].tolist()} vs {norms[:2].tolist()}")
+    check("decenter_renorm keeps the decentred direction",
+          torch.allclose(torch.nn.functional.cosine_similarity(decn, dec, dim=-1),
+                         torch.ones(latents.size(0)), atol=1e-4))
+
+    proj = inf.apply_transform(latents, "deproject:4", stats=stats)
+    residual = proj @ basis.T
+    check("deproject removes the basis directions",
+          bool(residual.abs().max() < 1e-4), f"max |Z.v| = {float(residual.abs().max()):.2e}")
+    check("deproject holds the per-slot norm fixed",
+          torch.allclose(proj.norm(dim=-1), norms, rtol=1e-4))
+    partial = inf.apply_transform(latents, "deproject:1", stats=stats)
+    check("deproject:1 removes only the first direction",
+          bool((partial @ basis[:1].T).abs().max() < 1e-4)
+          and bool((partial @ basis[1:].T).abs().max() > 1e-3))
+
+    raised = False
+    try:
+        inf.apply_transform(latents, "decenter")
+    except ValueError:
+        raised = True
+    check("a corpus transform without corpus statistics is refused", raised)
+
+    names = {c.name for c in inf.subspace_conditions()}
+    check("the subspace sweep measures both tasks",
+          all(n.replace("/conflict", "/reconstruct") in names
+              for n in names if n.startswith("memory@") and n.endswith("/conflict")))
+    check("the subspace sweep includes the global-mean complement",
+          "memory@gmean/conflict" in names and "memory@rmean/conflict" in names)
 
     names = {c.name for c in inf.intervention_conditions()}
     check("every intervention is measured on both tasks",

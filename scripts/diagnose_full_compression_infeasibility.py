@@ -173,7 +173,8 @@ class PromptFactory:
     def __init__(self, tokenizer, lm, cache: LatentCache, corpus: Dict[str, str],
                  n_mem_tokens: int, doc_max_tokens: int,
                  style: str = "pisco_question",
-                 system_prompt: Optional[str] = None):
+                 system_prompt: Optional[str] = None,
+                 latent_stats: Optional["inf.LatentStatistics"] = None):
         self.tok = tokenizer
         self.lm = lm
         self.cache = cache
@@ -184,6 +185,7 @@ class PromptFactory:
         self.pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
         self.style = style
         self.system_prompt = system_prompt
+        self.latent_stats = latent_stats
 
     def document_text(self, doc_ids: Sequence[str]) -> str:
         """The raw-text rendering, clipped exactly as the compressor's input was."""
@@ -227,7 +229,8 @@ class PromptFactory:
                 # function of the run, not of the iteration order.
                 generator = torch.Generator().manual_seed(
                     abs(hash((sample["sample_id"], condition.name))) % (2 ** 31))
-                soft = inf.apply_transform(soft, condition.transform, generator)
+                soft = inf.apply_transform(soft, condition.transform, generator,
+                                           self.latent_stats)
 
         rendered = inf.render(self.tok, document, query=query, instruction=instruction,
                               system_prompt=self.system_prompt, style=self.style)
@@ -337,6 +340,8 @@ def reduce_statistics(collected: inf.CollectedAttention, max_steps: int) -> Dict
             "v_contrib_lg": np.nanmean(collected.v_contrib, axis=(1, 2)).astype(np.float16),
             "entropy_lh": np.nanmean(collected.entropy, axis=2).astype(np.float16),
             "hidden_norm_lg": collected.hidden_norm.astype(np.float32),
+            "hidden_update_lg": collected.hidden_update.astype(np.float32),
+            "hidden_rotation_lg": collected.hidden_rotation.astype(np.float32),
             "top_group_lg": top.mean(axis=1).astype(np.float32),
             "group_size_sg": pad_steps(collected.group_size).astype(np.float32),
         }
@@ -412,10 +417,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summarize_only", default=None,
                     help="recompute behavioral_metrics.json for an existing run directory")
-    ap.add_argument("--level", choices=["A", "B", "A-intervene"], default="A",
+    ap.add_argument("--level", choices=["A", "B", "A-intervene", "A-subspace"], default="A",
                     help="A/B are observational (Phase 1-2); A-intervene adds the "
                          "reversible memory edits of §11 and is only meaningful "
-                         "once a stable failure and a candidate mechanism exist")
+                         "once a stable failure and a candidate mechanism exist; "
+                         "A-subspace asks whether the suppressing component is "
+                         "separable from the document")
+    ap.add_argument("--subspace_ranks", default="1,2,4,8,16",
+                    help="principal directions to remove in the A-subspace sweep")
+    ap.add_argument("--stats_documents", type=int, default=8192,
+                    help="cache documents sampled to estimate the latent geometry")
     ap.add_argument("--preset", default="pisco_hotpot")
     ap.add_argument("--rows", type=int, default=40)
     ap.add_argument("--seed", type=int, default=20260922)
@@ -508,16 +519,32 @@ def main():
     doc_max_tokens = int(cache.metadata.doc_max_length or 128)
     system_prompt = (model.prompt_builders["D0"].system_prompt
                      if args.system_prompt == "pisco" else None)
+
+    latent_stats = None
+    if args.level == "A-subspace":
+        print(f"[stats] estimating latent geometry over {args.stats_documents} documents")
+        latent_stats = inf.estimate_latent_statistics(
+            cache, n_documents=args.stats_documents, seed=args.seed, device=device)
+        print("[stats] " + json.dumps(latent_stats.summary()))
+        torch.save({"mean": latent_stats.mean, "basis": latent_stats.basis,
+                    "singular_values": latent_stats.singular_values},
+                   os.path.join(out_dir, "latent_statistics.pt"))
+
     factory = PromptFactory(tokenizer, lm, cache, corpus, stack.n_mem_tokens,
                             doc_max_tokens, style=args.prompt_style,
-                            system_prompt=system_prompt)
+                            system_prompt=system_prompt, latent_stats=latent_stats)
 
     # -- samples and conditions -------------------------------------------------
     if args.level.startswith("A"):
         samples = level_a_samples(tokenizer, corpus, cache, args.rows, rng)
-        alphas = [float(x) for x in args.intervene_alphas.split(",") if x.strip()]
-        conditions = (inf.intervention_conditions(alphas) if args.level == "A-intervene"
-                      else inf.level_a_conditions())
+        if args.level == "A-intervene":
+            conditions = inf.intervention_conditions(
+                [float(x) for x in args.intervene_alphas.split(",") if x.strip()])
+        elif args.level == "A-subspace":
+            conditions = inf.subspace_conditions(
+                [int(x) for x in args.subspace_ranks.split(",") if x.strip()])
+        else:
+            conditions = inf.level_a_conditions()
         max_new_tokens = args.max_new_tokens or 192
     else:
         queries = args.queries or cfg.data.eval_files["dev"]
@@ -583,7 +610,8 @@ def main():
         groups=np.array(inf.GROUPS),
         **{k: np.stack(arrays[k]) for k in attention_keys if k in arrays})
     norm_keys = ("qk_mean_lhg", "qk_max_lhg", "qk_mean_sg", "k_norm_lhg",
-                 "v_norm_lhg", "v_contrib_lg", "hidden_norm_lg")
+                 "v_norm_lhg", "v_contrib_lg", "hidden_norm_lg",
+                 "hidden_update_lg", "hidden_rotation_lg")
     np.savez_compressed(
         os.path.join(out_dir, "norm_logit_stats.npz"),
         sample_id=np.array(keys), condition=np.array(condition_names),
@@ -639,6 +667,7 @@ def main():
                                for s in samples},
         "prompt_equivalence_audit": audit,
         "numerical_checks": checks,
+        "latent_statistics": latent_stats.summary() if latent_stats else None,
         "figure_samples": sorted(figure_ids),
         "selecom_reference": {
             "source": "SeleCom (WWW'26) §3.2.1 and Figure 2",
