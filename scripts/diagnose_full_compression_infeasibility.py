@@ -385,8 +385,27 @@ def patch_fidelity(lm, inputs_embeds: torch.Tensor, group_index, target_position
 # --------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------
+def resummarise(run_dir: str) -> str:
+    """Rebuild ``behavioral_metrics.json`` from ``examples.jsonl``.
+
+    The per-example records hold everything the summary is derived from, so a new
+    statistic can be added without another 100 GPU-minutes -- and without the
+    temptation to leave it out because recomputing would be expensive.
+    """
+    path = os.path.join(run_dir, "examples.jsonl")
+    examples = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+    summary = summarise(examples)
+    summary["resummarised_from"] = os.path.abspath(path)
+    out = os.path.join(run_dir, "behavioral_metrics.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--summarize_only", default=None,
+                    help="recompute behavioral_metrics.json for an existing run directory")
     ap.add_argument("--level", choices=["A", "B"], default="A")
     ap.add_argument("--preset", default="pisco_hotpot")
     ap.add_argument("--rows", type=int, default=40)
@@ -421,6 +440,10 @@ def main():
                          "documents, so 'none' is the control for whether a conflict "
                          "failure is that standing order rather than compression")
     args = ap.parse_args()
+
+    if args.summarize_only:
+        print(f"[done] {resummarise(args.summarize_only)}")
+        return
 
     started = time.time()
     run_id = args.run_id or f"{time.strftime('%Y%m%d-%H%M%S')}-level{args.level}"
@@ -756,6 +779,42 @@ def _target_nll_from(output, target_positions: torch.Tensor,
             "n_target_tokens": int(ids.numel())}
 
 
+def mechanism_behaviour(by_condition: Dict[str, List[Dict]]) -> Dict[str, object]:
+    """Per-example correlations between the internal statistics and the failure (§10).
+
+    A condition-level mean can show dominance and failure moving together across
+    conditions while they are unrelated *within* a condition -- which would mean
+    the dominance is a property of the prompt layout, not a cause of the failure.
+    Only the row-level correlation distinguishes the two, so it is reported even
+    where it comes out flat.
+    """
+    out: Dict[str, object] = {}
+    pairs = [("dominance.density_ratio", "metrics.leading"),
+             ("dominance.mass_ratio", "metrics.leading"),
+             ("dominance.qk_gap", "metrics.leading"),
+             ("dominance.density_ratio", "metrics.longest_copied_span"),
+             ("dominance.qk_gap", "metrics.longest_copied_span"),
+             ("heads.dominant_head_fraction", "metrics.leading"),
+             ("group_sizes.document", "metrics.leading"),
+             ("nll.nll", "metrics.leading")]
+
+    def read(row: Dict, path: str) -> float:
+        head, tail = path.split(".", 1)
+        block = row.get(head) or {}
+        value = block.get(tail)
+        return float(value) if isinstance(value, (int, float)) else float("nan")
+
+    for condition, rows in sorted(by_condition.items()):
+        if not condition.endswith("conflict") or len(rows) < 8:
+            continue
+        block = {}
+        for mechanism, behaviour in pairs:
+            block[f"{mechanism} ~ {behaviour}"] = inf.spearman(
+                [read(r, mechanism) for r in rows], [read(r, behaviour) for r in rows])
+        out[condition] = block
+    return out
+
+
 def summarise(examples: Sequence[Dict]) -> Dict[str, object]:
     """Per-condition means, the qualification gate, and the paired contrasts."""
     by_condition: Dict[str, List[Dict]] = {}
@@ -804,7 +863,15 @@ def summarise(examples: Sequence[Dict]) -> Dict[str, object]:
         "memory_vs_raw_nonce_nll": paired("memory/conflict", "raw/conflict", "nll.nll"),
         "memory_vs_zero_nonce_nll": paired("memory/conflict", "zero/conflict", "nll.nll"),
         "memory_vs_none_nonce_nll": paired("memory/conflict", "none/conflict", "nll.nll"),
+        "memory_vs_raw_density_ratio": paired(
+            "memory/conflict", "raw/conflict", "dominance.density_ratio"),
+        "memory_vs_raw_mass_ratio": paired(
+            "memory/conflict", "raw/conflict", "dominance.mass_ratio"),
+        "memory_vs_raw_qk_gap": paired("memory/conflict", "raw/conflict", "dominance.qk_gap"),
+        "qa_memory_vs_raw_density_ratio": paired(
+            "memory/qa", "raw/qa", "dominance.density_ratio"),
     }
+    summary["mechanism_behaviour"] = mechanism_behaviour(by_condition)
 
     headline = {}
     for name in ("memory/conflict", "raw/conflict", "none/conflict", "zero/conflict",
