@@ -581,6 +581,73 @@ def behaviour_figure(run: Run, out_dir: str) -> Optional[str]:
     return path
 
 
+def separability_figure(run: Run, out_dir: str) -> Optional[str]:
+    """Instruction following against document utility, one point per intervention.
+
+    The question the subspace sweep asks is whether the suppressing component can
+    be removed *without* taking the document with it.  That is a statement about
+    two numbers at once, so it has to be drawn in two dimensions: anything that
+    separates them would sit above and to the right of the curve the others trace.
+    """
+    per = run.behaviour.get("per_condition", {})
+
+    def point(conflict: str, grounded: Optional[str]):
+        a = per.get(conflict, {}).get("leading")
+        b = per.get(grounded or "", {}).get("rouge_l")
+        if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+            return None
+        return float(b), float(a)
+
+    family = [("row mean", "memory@rmean"), ("global mean", "memory@gmean"),
+              ("−μ", "memory@dec"), ("−μ renorm", "memory@decn"),
+              ("−top1", "memory@proj1"), ("−top2", "memory@proj2"),
+              ("−top4", "memory@proj4"), ("−top8", "memory@proj8"),
+              ("−top16", "memory@proj16")]
+    swept = [(label, point(f"{tag}/conflict", f"{tag}/reconstruct")) for label, tag in family]
+    swept = [(label, p) for label, p in swept if p]
+    anchors = [("PISCO memory", point("memory/conflict", "memory/reconstruct"), "#2a78d6"),
+               ("raw text", point("raw/conflict", "raw/reconstruct"), "#1baf7a"),
+               ("no memory", point("none/conflict", "none/reconstruct"), "#898781")]
+    anchors = [(n, p, c) for n, p, c in anchors if p]
+    if not swept or not anchors:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.4, 5.4), facecolor=SURFACE)
+    style_axes(ax)
+    ax.grid(True, axis="x", color=GRID, linewidth=0.7, zorder=0)
+
+    # Only the deproject family is an ordered sequence (k = 1, 2, 4, 8, 16), so
+    # only it gets a connecting line; joining the others in list order would draw
+    # a trajectory through points that have no order.
+    ordered = [(label, p) for label, p in swept if label.startswith("−top")]
+    if len(ordered) > 1:
+        ax.plot([p[0] for _, p in ordered], [p[1] for _, p in ordered],
+                color="#eb6834", linewidth=1.4, alpha=0.45, zorder=2)
+    ax.scatter([p[0] for _, p in swept], [p[1] for _, p in swept], s=58, color="#eb6834",
+               zorder=3, edgecolor=SURFACE, linewidth=1.2,
+               label="latent edits; line = removing the top k directions (k = 1…16)")
+    for label, (x, y) in swept:
+        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points",
+                    fontsize=7.5, color=INK_SECONDARY)
+    for name, (x, y), colour in anchors:
+        ax.scatter([x], [y], s=120, marker="*", color=colour, zorder=4,
+                   edgecolor=SURFACE, linewidth=1.2)
+        ax.annotate(name, (x, y), xytext=(7, -10), textcoords="offset points",
+                    fontsize=8.5, color=INK)
+
+    ax.set_xlabel("document utility  (reconstruction ROUGE-L)", fontsize=9, color=INK_MUTED)
+    ax.set_ylabel("instruction following  (output starts with the nonce)",
+                  fontsize=9, color=INK_MUTED)
+    ax.set_title("Can the suppressing component be removed without the document?\n"
+                 "every latent edit trades one for the other; raw text is off the curve",
+                 fontsize=10.5, color=INK)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK_SECONDARY, loc="upper right")
+    path = os.path.join(out_dir, "separability_tradeoff.png")
+    fig.savefig(path, dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
@@ -598,6 +665,7 @@ def main():
         step_figure(run, out_dir, args.max_steps),
         norm_figure(run, out_dir),
         behaviour_figure(run, out_dir),
+        separability_figure(run, out_dir),
     ]
     for path in written:
         print("wrote" if path else "skipped", path or "(condition absent from this run)")
