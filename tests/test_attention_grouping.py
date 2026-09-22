@@ -370,6 +370,55 @@ def test_metrics():
           noisy["lo"] < 0 < noisy["hi"], f"[{noisy['lo']:.2f}, {noisy['hi']:.2f}]")
 
 
+def test_transforms():
+    """Each §11 edit must remove exactly the property it claims to, and no other."""
+    torch.manual_seed(0)
+    latents = torch.randn(8, 16) * torch.linspace(1.0, 4.0, 8)[:, None]
+    norms = latents.norm(dim=-1)
+
+    same = inf.apply_transform(latents, "none")
+    check("none leaves the latents untouched", torch.equal(same, latents))
+
+    half = inf.apply_transform(latents, "scale:0.5")
+    check("scale halves every latent", torch.allclose(half, latents * 0.5))
+
+    generator = torch.Generator().manual_seed(1)
+    random = inf.apply_transform(latents, "norm_matched_random", generator)
+    check("norm_matched_random preserves the per-slot norms",
+          torch.allclose(random.norm(dim=-1), norms, rtol=1e-3),
+          f"{random.norm(dim=-1)[:3].tolist()} vs {norms[:3].tolist()}")
+    cosine = torch.nn.functional.cosine_similarity(random, latents, dim=-1)
+    check("norm_matched_random discards the directions",
+          bool(cosine.abs().max() < 0.7), f"max |cos| = {float(cosine.abs().max()):.3f}")
+
+    generator = torch.Generator().manual_seed(2)
+    shuffled = inf.apply_transform(latents, "shuffle", generator)
+    check("shuffle keeps the multiset of latents",
+          torch.allclose(shuffled.norm(dim=-1).sort().values, norms.sort().values))
+    check("shuffle actually reorders", not torch.equal(shuffled, latents))
+
+    averaged = inf.apply_transform(latents, "mean")
+    check("mean makes every slot identical",
+          torch.allclose(averaged, averaged[0].expand_as(averaged)))
+    check("mean keeps the row's centre",
+          torch.allclose(averaged.mean(0), latents.mean(0), atol=1e-5))
+
+    raised = False
+    try:
+        inf.Condition("x", "raw", "conflict", "scale:0.5")
+    except ValueError:
+        raised = True
+    check("a transform on a non-memory condition is refused", raised)
+
+    names = {c.name for c in inf.intervention_conditions()}
+    check("every intervention is measured on both tasks",
+          all(n.replace("/conflict", "/reconstruct") in names
+              for n in names if n.startswith("memory@") and n.endswith("/conflict")),
+          str(sorted(names)))
+    check("the intervention sweep carries its own observational anchors",
+          {"memory/conflict", "raw/conflict", "zero/conflict", "none/conflict"} <= names)
+
+
 def test_nonce(tokenizer):
     rng = random.Random(0)
     for length in (8, 12, 16):
@@ -394,6 +443,7 @@ def main():
         test_nonce(tokenizer)
     test_grouping_math()
     test_patch_fidelity()
+    test_transforms()
     test_metrics()
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

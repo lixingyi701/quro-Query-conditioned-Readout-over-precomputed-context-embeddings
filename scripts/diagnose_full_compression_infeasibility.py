@@ -222,6 +222,12 @@ class PromptFactory:
                 soft = self._match_length(soft, n_latents)
             else:  # zero
                 soft = torch.zeros(n_latents, self.hidden, device=device, dtype=dtype)
+            if condition.transform != "none" and soft is not None:
+                # Seeded per (sample, condition) so a random transform is a fixed
+                # function of the run, not of the iteration order.
+                generator = torch.Generator().manual_seed(
+                    abs(hash((sample["sample_id"], condition.name))) % (2 ** 31))
+                soft = inf.apply_transform(soft, condition.transform, generator)
 
         rendered = inf.render(self.tok, document, query=query, instruction=instruction,
                               system_prompt=self.system_prompt, style=self.style)
@@ -406,7 +412,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summarize_only", default=None,
                     help="recompute behavioral_metrics.json for an existing run directory")
-    ap.add_argument("--level", choices=["A", "B"], default="A")
+    ap.add_argument("--level", choices=["A", "B", "A-intervene"], default="A",
+                    help="A/B are observational (Phase 1-2); A-intervene adds the "
+                         "reversible memory edits of §11 and is only meaningful "
+                         "once a stable failure and a candidate mechanism exist")
     ap.add_argument("--preset", default="pisco_hotpot")
     ap.add_argument("--rows", type=int, default=40)
     ap.add_argument("--seed", type=int, default=20260922)
@@ -488,9 +497,10 @@ def main():
                             system_prompt=system_prompt)
 
     # -- samples and conditions -------------------------------------------------
-    if args.level == "A":
+    if args.level.startswith("A"):
         samples = level_a_samples(tokenizer, corpus, cache, args.rows, rng)
-        conditions = inf.level_a_conditions()
+        conditions = (inf.intervention_conditions() if args.level == "A-intervene"
+                      else inf.level_a_conditions())
         max_new_tokens = args.max_new_tokens or 192
     else:
         queries = args.queries or cfg.data.eval_files["dev"]
@@ -606,7 +616,7 @@ def main():
                        "eos_token_id": tokenizer.eos_token_id,
                        "skipped": args.skip_generation},
         "conditions": [{"name": c.name, "document_kind": c.document_kind,
-                        "task": c.task} for c in conditions],
+                        "task": c.task, "transform": c.transform} for c in conditions],
         "latents_per_sample": {s["sample_id"]: len(s["doc_ids"]) * cache.metadata.latent_size
                                for s in samples},
         "prompt_equivalence_audit": audit,
@@ -698,7 +708,8 @@ def run_cell(lm, tokenizer, factory: PromptFactory, sample: Dict,
     record: Dict[str, object] = {
         "sample_id": sample["sample_id"], "row_id": sample.get("row_id"),
         "condition": condition.name, "document_kind": condition.document_kind,
-        "task": condition.task, "doc_ids": sample["doc_ids"],
+        "task": condition.task, "transform": condition.transform,
+        "doc_ids": sample["doc_ids"],
         "n_docs": len(sample["doc_ids"]), "nonce": sample["nonce"],
         "query": texts["query"], "instruction": texts["instruction"],
         "prompt_text": groups.text, "n_prompt_tokens": groups.n_prompt_tokens,

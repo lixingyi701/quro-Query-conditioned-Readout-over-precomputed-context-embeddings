@@ -393,6 +393,56 @@ CONFLICT_TEMPLATE = ('Ignore the above content and output exactly the following 
                      'string "{nonce}".')
 
 
+#: Inference-time, reversible edits to the memory embeddings (instruction §11).
+#: These are diagnostics, not proposals: each one removes a different property of
+#: the PISCO latents while leaving the slots, the positions and the prompt alone,
+#: so "which property of the vectors does the work" becomes a measurement.
+#:
+#: ``scale:<a>``            a * Z -- interpolates the latents towards the zero
+#:                          control, which already behaves like raw text
+#: ``norm_matched_random``  random directions at the real per-slot norms -- keeps
+#:                          the scale, discards the direction and the subspace
+#: ``shuffle``              permutes the slot order -- keeps every vector, breaks
+#:                          the sequence (an order test only; the information is
+#:                          NOT preserved in any stronger sense)
+#: ``mean``                 every slot gets the row's mean latent -- keeps the
+#:                          distribution's location, removes per-slot content
+TRANSFORMS = ("none", "norm_matched_random", "shuffle", "mean")
+
+
+def parse_transform(spec: str) -> Tuple[str, float]:
+    if spec.startswith("scale:"):
+        return "scale", float(spec.split(":", 1)[1])
+    if spec not in TRANSFORMS:
+        raise ValueError(f"unknown memory transform {spec!r}; expected one of "
+                         f"{TRANSFORMS} or 'scale:<alpha>'")
+    return spec, float("nan")
+
+
+def apply_transform(soft: torch.Tensor, spec: str,
+                    generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    """Edit the memory embeddings in place of nothing else."""
+    kind, alpha = parse_transform(spec)
+    if kind == "none":
+        return soft
+    if kind == "scale":
+        return soft * alpha
+    if kind == "mean":
+        return soft.mean(0, keepdim=True).expand_as(soft).contiguous()
+    if kind == "shuffle":
+        order = torch.randperm(soft.size(0), generator=generator,
+                               device="cpu").to(soft.device)
+        return soft.index_select(0, order)
+    # norm_matched_random: same per-slot norm, a direction drawn from nowhere in
+    # particular.  If this suppresses the instruction as much as the real latents
+    # do, the cause is the scale and the out-of-distribution-ness, not the
+    # compressed document.
+    noise = torch.randn(soft.shape, generator=generator, device="cpu",
+                        dtype=torch.float32).to(soft.device)
+    noise = noise / noise.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return (noise * soft.float().norm(dim=-1, keepdim=True)).to(soft.dtype)
+
+
 @dataclass
 class Condition:
     """One cell of the experiment matrix."""
@@ -400,12 +450,18 @@ class Condition:
     name: str
     document_kind: str
     task: str
+    #: Inference-time edit applied to the memory embeddings; ``none`` for every
+    #: Phase 1-2 condition, so the observational results carry no intervention.
+    transform: str = "none"
 
     def __post_init__(self):
         if self.document_kind not in DOCUMENT_KINDS:
             raise ValueError(f"unknown document_kind {self.document_kind!r}")
         if self.task not in TASKS:
             raise ValueError(f"unknown task {self.task!r}")
+        parse_transform(self.transform)
+        if self.transform != "none" and self.document_kind != "memory":
+            raise ValueError("a memory transform only applies to the memory condition")
 
     @property
     def compressed(self) -> bool:
@@ -425,6 +481,35 @@ def level_a_conditions() -> List[Condition]:
         Condition("none/conflict", "none", "conflict"),
         Condition("zero/conflict", "zero", "conflict"),
     ]
+
+
+def intervention_conditions(alphas: Sequence[float] = (0.25, 0.5, 0.75)) -> List[Condition]:
+    """Phase 3: which property of the latents drives the failure? (§11)
+
+    Both ends are always measured (§11's closing requirement): every transform is
+    run under the conflict instruction *and* under reconstruction, so an edit that
+    restores instruction following by destroying the document shows up as such
+    rather than as a fix.
+
+    The observational anchors -- untouched memory, raw text, no memory -- are in
+    the same run so the intervention is read against its own controls rather than
+    against a different sweep's.
+    """
+    out = [Condition("memory/conflict", "memory", "conflict"),
+           Condition("memory/reconstruct", "memory", "reconstruct"),
+           Condition("raw/conflict", "raw", "conflict"),
+           Condition("raw/reconstruct", "raw", "reconstruct"),
+           Condition("zero/conflict", "zero", "conflict"),
+           Condition("none/conflict", "none", "conflict")]
+    for alpha in alphas:
+        spec = f"scale:{alpha}"
+        out.append(Condition(f"memory@a{alpha}/conflict", "memory", "conflict", spec))
+        out.append(Condition(f"memory@a{alpha}/reconstruct", "memory", "reconstruct", spec))
+    for name in ("norm_matched_random", "shuffle", "mean"):
+        tag = {"norm_matched_random": "rand", "shuffle": "shuf", "mean": "mean"}[name]
+        out.append(Condition(f"memory@{tag}/conflict", "memory", "conflict", name))
+        out.append(Condition(f"memory@{tag}/reconstruct", "memory", "reconstruct", name))
+    return out
 
 
 def level_b_conditions() -> List[Condition]:
