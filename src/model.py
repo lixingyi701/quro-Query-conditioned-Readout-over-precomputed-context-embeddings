@@ -339,6 +339,17 @@ class QuROModel(nn.Module):
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
+        # The scale the soft tokens are written into the decoder at.  Held as a
+        # log so a learned scale stays positive and moves multiplicatively, and
+        # kept outside the readout so it applies identically to every kind --
+        # including pisco_direct, which has no parameters and is therefore the
+        # cleanest arm for testing what the scale alone does.
+        self.register_buffer("_output_scale",
+                             torch.tensor(float(r.output_scale)), persistent=False)
+        self.log_output_scale = nn.Parameter(
+            torch.tensor(float(r.output_scale)).log(),
+            requires_grad=bool(r.output_scale_learnable))
+
         self.budget_selector = QueryBudgetSelector(query_encoder.out_dim, r.budget_buckets)
         if not r.adaptive_budget:
             for parameter in self.budget_selector.parameters():
@@ -373,6 +384,17 @@ class QuROModel(nn.Module):
     @property
     def uses_cosine_prior(self) -> bool:
         return bool(getattr(self.readout, "cosine_prior", False))
+
+    @property
+    def output_scale(self):
+        """Scalar the soft tokens are multiplied by before reaching the decoder.
+
+        A plain float when fixed, so the no-op path stays a no-op; a tensor when
+        learnable, so the gradient reaches it.
+        """
+        if self.log_output_scale.requires_grad:
+            return self.log_output_scale.exp()
+        return float(self._output_scale)
 
     @property
     def gen_dtype(self):
@@ -538,6 +560,16 @@ class QuROModel(nn.Module):
         soft_tokens, aux = self.readout(
             latents, document_mask, query_emb, batch.get("query_mask"),
             budget=int(budgets.max().item()), return_attn=return_attn, **kwargs)
+
+        # Applied last, to whatever the readout produced.  Scaling here rather
+        # than inside each readout means the identity structure the R/RQ arms
+        # depend on is untouched: at output_scale=1 this is exactly a no-op, and
+        # every historical run is bit-identical.
+        scale = self.output_scale
+        if scale != 1.0 or self.log_output_scale.requires_grad:
+            soft_tokens = soft_tokens * scale
+            aux = dict(aux)
+            aux["output_scale"] = scale
 
         token_mask = aux.get("token_mask")
         if token_mask is None:

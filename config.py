@@ -90,6 +90,28 @@ class ReadoutConfig:
     max_document_sources: int = 32
     max_latents_per_document: int = 64
 
+    # Scale of the soft tokens actually written into the decoder's memory slots.
+    #
+    # This is not a normalisation detail; it is the only knob that reaches the
+    # decoder's *write* path.  A PISCO latent enters the residual stream at norm
+    # ~104 while a Mistral token embedding is ~0.17, and in a pre-norm stack the
+    # per-layer update is computed from RMSNorm(h) -- so its magnitude is set by
+    # the layer, not by ||h||.  Measured consequence (docs/LATENT_CONTEXTUALISATION.md):
+    # a memory position's relative per-layer update is 0.071 against a text
+    # token's 0.55, and after 32 layers it is still 0.67 aligned with the latent
+    # written in, where a text token ends up orthogonal to its embedding.  The
+    # slots are read from; they never participate in the computation.
+    #
+    # Because RMSNorm(a*z) = RMSNorm(z), scaling leaves the *read* path exactly
+    # unchanged -- which is why the inference-time alpha sweep moved no attention
+    # statistic at all -- while changing how much the layers can move the slot.
+    # 1.0 is PISCO's own scale and every historical run.
+    output_scale: float = 1.0
+    # Let the model take the scale back if the loss prefers it.  Off by default:
+    # a fixed scale is the intervention, a learned one asks a different question
+    # ("does training want PISCO's scale?") and the two must not be confused.
+    output_scale_learnable: bool = False
+
     def __post_init__(self):
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
@@ -102,6 +124,11 @@ class ReadoutConfig:
             raise ValueError(f"unknown output_mode: {self.output_mode}")
         if self.out_proj_init not in {None, "zeros", "default"}:
             raise ValueError(f"unknown out_proj_init: {self.out_proj_init}")
+        if not 0.0 < self.output_scale <= 1.0:
+            raise ValueError(
+                f"output_scale must be in (0, 1]; got {self.output_scale}. Above 1 "
+                "would push the slots further out of the decoder's training "
+                "distribution, which is the opposite of the intervention.")
         # Legacy runs and scripts pass residual_readout=False and expect Delta alone.
         if not self.residual_readout and self.output_mode == "full":
             self.output_mode = "delta_only"
@@ -348,9 +375,11 @@ class Config:
 
     def summary(self) -> str:
         r, g = self.readout, self.generator
+        scale = (f" scale={r.output_scale}{'(learned)' if r.output_scale_learnable else ''}"
+                 if r.output_scale != 1.0 or r.output_scale_learnable else "")
         return (f"[cfg] readout={r.kind}/{r.output_query_mode} d_r={r.d_readout} "
                 f"B={r.max_budget} buckets={r.budget_buckets} blocks={r.num_blocks} "
-                f"out={r.output_mode}/{r.out_proj_init or 'auto'} | "
+                f"out={r.output_mode}/{r.out_proj_init or 'auto'}{scale} | "
                 f"generator={g.kind}({g.lora_init}) | "
                 f"decoder_input={self.decoder.input_mode} "
                 f"qdrop={self.decoder.query_text_dropout}")

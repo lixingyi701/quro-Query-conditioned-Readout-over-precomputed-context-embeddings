@@ -417,7 +417,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summarize_only", default=None,
                     help="recompute behavioral_metrics.json for an existing run directory")
-    ap.add_argument("--level", choices=["A", "B", "A-intervene", "A-subspace"], default="A",
+    ap.add_argument("--level",
+                    choices=["A", "B", "A-intervene", "A-subspace", "B-alpha"], default="A",
                     help="A/B are observational (Phase 1-2); A-intervene adds the "
                          "reversible memory edits of §11 and is only meaningful "
                          "once a stable failure and a candidate mechanism exist; "
@@ -550,7 +551,9 @@ def main():
         queries = args.queries or cfg.data.eval_files["dev"]
         samples = level_b_samples(queries, cache, args.rows,
                                   cfg.data.max_docs or 10, rng)
-        conditions = inf.level_b_conditions()
+        conditions = (inf.level_b_alpha_conditions(
+            [float(x) for x in args.intervene_alphas.split(",") if x.strip()])
+            if args.level == "B-alpha" else inf.level_b_conditions())
         max_new_tokens = args.max_new_tokens or 48
     print(f"[data] {len(samples)} samples x {len(conditions)} conditions")
 

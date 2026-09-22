@@ -820,6 +820,73 @@ def test_cache(cache_dir, doc_ids, m, h):
         check("unknown document IDs raise", True)
 
 
+def test_output_scale(cache_dir, train_path, m, h):
+    """The scale the soft tokens reach the decoder at (docs/LATENT_CONTEXTUALISATION.md).
+
+    Two properties carry the experiment.  At 1.0 it must be a bit-exact no-op, or
+    every historical run stops being comparable to the new ones.  Below 1.0 it
+    must scale and *only* scale -- the direction is what the decoder reads
+    (RMSNorm makes the read path scale-invariant), so a transform that rotated
+    the soft tokens would be changing the read path too and the intervention
+    would no longer be about contextualisation.
+    """
+    def build(scale, learnable=False):
+        cfg = get_config("toy")
+        cfg.data.train_file = train_path
+        cfg.data.eval_files = {"dev": train_path}
+        cfg.data.cache_dir = cache_dir
+        cfg.data.max_docs = 2
+        cfg.readout.kind = "pisco_direct"
+        cfg.readout.cache_hidden = h
+        cfg.readout.output_scale = scale
+        cfg.readout.output_scale_learnable = learnable
+        cfg.generator.toy_d_model = h
+        cfg.revalidate()
+        torch.manual_seed(0)
+        stack, model = build_model(cfg, cache_hidden=h)
+        dataset = QuRODataset(train_path, stack.tokenizer, cfg.data,
+                              query_tokenizer=stack.query_tokenizer)
+        collator = QuROCollator(LatentCache(cache_dir), pad_id=model.pad_id, max_docs=2)
+        return model, collator([dataset[i] for i in range(2)])
+
+    model, batch = build(1.0)
+    base = model.readout_cached(batch, budget=8)["soft_tokens"]
+    check("output_scale=1.0 is a no-op",
+          "output_scale" not in model.readout_cached(batch, budget=8)["aux"])
+    check("a fixed scale is not handed to the optimiser",
+          all(p is not model.log_output_scale for p in model.trainable_parameters()))
+
+    quarter, batch_q = build(0.25)
+    scaled = quarter.readout_cached(batch_q, budget=8)["soft_tokens"]
+    check("output_scale scales the soft tokens exactly",
+          torch.equal(scaled, base * 0.25),
+          f"max diff {float((scaled - base * 0.25).abs().max()):.2e}")
+    check("output_scale leaves the direction untouched",
+          torch.allclose(torch.nn.functional.cosine_similarity(scaled, base, dim=-1),
+                         torch.ones(scaled.shape[:2]), atol=1e-5))
+
+    learned, batch_l = build(0.5, learnable=True)
+    check("a learnable scale starts where it was initialised",
+          abs(float(learned.output_scale) - 0.5) < 1e-6)
+    check("a learnable scale is handed to the optimiser",
+          any(p is learned.log_output_scale for p in learned.trainable_parameters()))
+    loss, _ = learned.qa_loss(batch_l, budget=8)
+    loss.backward()
+    check("gradient reaches the scale through the decoder",
+          learned.log_output_scale.grad is not None
+          and float(learned.log_output_scale.grad.abs()) > 0)
+
+    for bad in (0.0, -1.0, 1.5):
+        raised = False
+        try:
+            cfg = get_config("toy")
+            cfg.readout.output_scale = bad
+            cfg.revalidate()
+        except ValueError:
+            raised = True
+        check(f"output_scale={bad} is refused", raised)
+
+
 def test_end_to_end(cache_dir, train_path, m, h):
     cfg = get_config("toy")
     with tempfile.TemporaryDirectory() as out_dir:
@@ -891,6 +958,7 @@ def main():
         test_prompt(toy_tok, 8)
         test_query_slot_prompts(toy_tok, 8)
 
+        test_output_scale(cache_dir, train_path, m, h)
         test_end_to_end(cache_dir, train_path, m, h)
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

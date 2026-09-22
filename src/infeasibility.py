@@ -639,6 +639,28 @@ def subspace_conditions(ranks: Sequence[int] = (1, 2, 4, 8, 16)) -> List[Conditi
     return out
 
 
+def level_b_alpha_conditions(alphas: Sequence[float] = (0.05, 0.10, 0.15, 0.25, 0.50)
+                             ) -> List[Condition]:
+    """The scale sweep on the metric that decides the project (innovation #1 stage B).
+
+    Level A measures document utility by reconstruction, which is the task PISCO
+    was distilled on and therefore the one most favourable to the latents.  The
+    number QuRO is judged on is HotpotQA QA, and the gap there lives entirely in
+    the bridge questions -- so the sweep has to run on QA, not on reconstruction,
+    or it would pick a scale by optimising the wrong quantity.
+
+    Deliberately small: the point is the alpha-by-contextualisation-by-accuracy
+    curve, and every extra condition costs 200 rows of generation.
+    """
+    out = [Condition("raw/qa", "raw", "qa"),
+           Condition("memory/qa", "memory", "qa"),
+           Condition("mismatch/qa", "mismatch", "qa"),
+           Condition("none/qa", "none", "qa")]
+    for alpha in alphas:
+        out.append(Condition(f"memory@a{alpha}/qa", "memory", "qa", f"scale:{alpha}"))
+    return out
+
+
 def level_b_conditions() -> List[Condition]:
     """HotpotQA: the same contrast where the repository's numbers actually live."""
     return [

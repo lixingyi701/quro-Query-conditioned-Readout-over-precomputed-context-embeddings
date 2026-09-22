@@ -124,6 +124,15 @@ def build_args():
     ap.add_argument("--readout_output_mode",
                     choices=["full", "pool_only", "delta_only"], default=None)
     ap.add_argument("--out_proj_init", choices=["zeros", "default"], default=None)
+    ap.add_argument("--output_scale", type=float, default=None,
+                    help="scale the soft tokens are written into the memory slots at. "
+                         "1.0 is PISCO's own and a no-op. Lower values leave the read "
+                         "path identical (RMSNorm is scale-invariant) while letting the "
+                         "layers actually move the slot -- see "
+                         "docs/LATENT_CONTEXTUALISATION.md")
+    ap.add_argument("--learn_output_scale", action="store_true",
+                    help="let training take the scale back; the fixed value is the "
+                         "intervention, this asks whether the loss prefers PISCO's scale")
     # "frozen query encoder" was never true for kind=generator: the encoder and
     # the decoder are one object, so the decoder's LoRA updates move the query
     # representation.  fixed_adapter makes it an actual fixed function; the
@@ -220,6 +229,10 @@ def apply_overrides(cfg, args):
         cfg.readout.residual_readout = (args.readout_output_mode == "full")
     if args.out_proj_init:
         cfg.readout.out_proj_init = args.out_proj_init
+    if args.output_scale is not None:
+        cfg.readout.output_scale = args.output_scale
+    if args.learn_output_scale:
+        cfg.readout.output_scale_learnable = True
     if args.query_representation:
         cfg.query_encoder.representation = args.query_representation
     if args.no_cosine_prior:
