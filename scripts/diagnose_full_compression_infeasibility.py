@@ -451,6 +451,10 @@ def main():
     ap.add_argument("--queries", default=None)
     ap.add_argument("--skip_generation", action="store_true",
                     help="mechanism statistics only; behavioural results are then absent")
+    ap.add_argument("--checkpoint", default=None,
+                    help="load a trained run's decoder LoRA before measuring, so the "
+                         "contextualisation statistics describe the system after "
+                         "training rather than PISCO's published one")
     ap.add_argument("--disable_adapter", action="store_true",
                     help="run the bare Mistral backbone with PISCO's decoder LoRA "
                          "switched off.  The adapter was trained only on "
@@ -493,6 +497,16 @@ def main():
     cfg.generator.attn_implementation = "eager"
     if args.max_docs is not None:
         cfg.data.max_docs = args.max_docs
+    if args.checkpoint:
+        # The budget buckets are a registered buffer, so a checkpoint trained at a
+        # single fixed budget cannot be loaded into a model built with the
+        # preset's [4, 8] -- and a size mismatch on a buffer is an error even
+        # under strict=False.  Take the shape-bearing fields from the checkpoint.
+        saved = torch.load(args.checkpoint, map_location="cpu",
+                           weights_only=False).get("config", {}).get("readout", {})
+        for field in ("max_budget", "budget_buckets"):
+            if saved.get(field) is not None:
+                setattr(cfg.readout, field, saved[field])
     cfg.revalidate()
 
     cache = LatentCache(cfg.data.cache_dir)
@@ -504,6 +518,14 @@ def main():
     if lm.config._attn_implementation != "eager":
         raise SystemExit(f"decoder loaded with {lm.config._attn_implementation!r}; "
                          "the diagnostics need eager attention")
+    loaded_step = None
+    if args.checkpoint:
+        # Only the decoder LoRA is restored; the readout is pisco_direct and has
+        # no parameters, so this is exactly the trained system minus the output
+        # scale, which the conditions apply themselves.
+        _, _, loaded_step = model.load(args.checkpoint)
+        model.eval()
+        print(f"[generator] loaded {args.checkpoint} (step {loaded_step})")
     if args.disable_adapter:
         # The resized embedding table stays -- <MEM*>/<SEP> still have their
         # trained vectors, and the latents are still PISCO's.  Only the LoRA that
@@ -641,6 +663,7 @@ def main():
                   "dtype": cfg.generator.dtype,
                   "attn_implementation": lm.config._attn_implementation,
                   "adapter_disabled": bool(args.disable_adapter),
+                  "checkpoint": args.checkpoint, "checkpoint_step": loaded_step,
                   "adapter": getattr(lm, "active_adapters", lambda: None)()
                   if callable(getattr(lm, "active_adapters", None))
                   else getattr(lm, "active_adapter", None),
