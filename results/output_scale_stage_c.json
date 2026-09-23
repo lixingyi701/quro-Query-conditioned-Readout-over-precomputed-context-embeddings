@@ -1,0 +1,126 @@
+{
+  "note": "Stage C of docs/LATENT_CONTEXTUALISATION.md -- output_scale on the P baseline",
+  "eval": "HotpotQA dev, D0, B=8, n=2000, 3000 steps, seed 42, decoder LoRA only",
+  "arms": {
+    "P0frozen": {
+      "output_scale": 1.0,
+      "lora_init": "frozen",
+      "substring": 0.485,
+      "em": 0.0175,
+      "f1": 0.16030419409792387,
+      "n": 2000,
+      "mismatch_doc_substring": 0.1425
+    },
+    "P1": {
+      "output_scale": 1.0,
+      "lora_init": "pisco",
+      "substring": 0.599,
+      "em": 0.551,
+      "f1": 0.677455029310215,
+      "n": 2000,
+      "mismatch_doc_substring": 0.219
+    },
+    "Pa10": {
+      "output_scale": 0.1,
+      "lora_init": "pisco",
+      "substring": 0.5845,
+      "em": 0.536,
+      "f1": 0.6688144374960547,
+      "n": 2000,
+      "mismatch_doc_substring": 0.2175
+    },
+    "Pa05": {
+      "output_scale": 0.05,
+      "lora_init": "pisco",
+      "substring": 0.588,
+      "em": 0.5365,
+      "f1": 0.673579379498497,
+      "n": 2000,
+      "mismatch_doc_substring": 0.221
+    }
+  },
+  "criteria": {
+    "1_and_2_vs_P1": {
+      "Pa10": {
+        "all": {
+          "delta": -0.0145,
+          "lo": -0.0285,
+          "hi": -0.0005,
+          "n": 2000
+        },
+        "bridge": {
+          "delta": -0.012330456226880395,
+          "lo": -0.02836004932182491,
+          "hi": 0.0036991368680641184,
+          "n": 1622
+        },
+        "comparison": {
+          "delta": -0.023809523809523808,
+          "lo": -0.05291005291005291,
+          "hi": 0.007936507936507936,
+          "n": 378
+        }
+      },
+      "Pa05": {
+        "all": {
+          "delta": -0.011,
+          "lo": -0.0245,
+          "hi": 0.003,
+          "n": 2000
+        },
+        "bridge": {
+          "delta": -0.012330456226880395,
+          "lo": -0.029593094944512947,
+          "hi": 0.004331072749691654,
+          "n": 1622
+        },
+        "comparison": {
+          "delta": -0.005291005291005291,
+          "lo": -0.03968253968253968,
+          "hi": 0.0291005291005291,
+          "n": 378
+        }
+      }
+    },
+    "3_contextualisation_after_training": {
+      "P1": {
+        "memory@a0.1/conflict": {
+          "relative_update_layers_0_30": 0.2087,
+          "cumulative_rotation": 0.2742
+        },
+        "memory/conflict": {
+          "relative_update_layers_0_30": 0.0718,
+          "cumulative_rotation": 0.6736
+        }
+      },
+      "Pa10": {
+        "memory@a0.1/conflict": {
+          "relative_update_layers_0_30": 0.1759,
+          "cumulative_rotation": 0.3729
+        },
+        "memory/conflict": {
+          "relative_update_layers_0_30": 0.0665,
+          "cumulative_rotation": 0.6905
+        }
+      },
+      "Pa05": {
+        "memory@a0.05/conflict": {
+          "relative_update_layers_0_30": 0.2094,
+          "cumulative_rotation": 0.2979
+        },
+        "memory/conflict": {
+          "relative_update_layers_0_30": 0.0658,
+          "cumulative_rotation": 0.6948
+        }
+      }
+    },
+    "thresholds": {
+      "1_substring_gain_over_P1": ">= +0.015",
+      "2_bridge_gain_ge_comparison_gain": true,
+      "3_relative_update_per_layer": ">= 0.3",
+      "reference_text_token_relative_update": 0.55,
+      "reference_untrained_alpha1": 0.0709
+    }
+  },
+  "verdict": "all three criteria fail; docs/LATENT_CONTEXTUALISATION.md §3.3 branch 'none satisfied'. Training absorbs the scale change almost losslessly (zero-shot -0.135 -> -0.011 at alpha=0.05) but lowers the memory positions' per-layer update rather than raising it."
+}
