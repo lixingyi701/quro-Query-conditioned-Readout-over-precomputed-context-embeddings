@@ -300,6 +300,8 @@ src/ scripts/ tests/   代码
 
 ### docs 索引
 
+- [`CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md`](CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md) — **最新**：D0/D2 causal-order 测试→训练 gate、机制 probe 与 matched LoRA 2×2 对照
+
 - [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) — 臂定义、四格分解、B 扫描
 - [`TRAINING_RECIPE_RESULTS.md`](TRAINING_RECIPE_RESULTS.md) — **最新**：训练配方、KL 蒸馏、问题压缩（37 次运行 + 24 组配对检验）
 - [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) — 实验设计
