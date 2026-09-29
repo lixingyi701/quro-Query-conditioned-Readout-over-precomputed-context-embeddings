@@ -121,6 +121,24 @@ Stage C 的数值负结果可以保留。单 seed 的配对 CI 衡量给定训�
 - 在真实 K=10 QA prompt 上验证诊断，不直接将 Level A 短文档/单文档统计外推到多文档组合机制。
 - 若讨论 query-conditioned computation，明确发生在外部 readout、后续 query/answer 位置，还是改变了输入顺序；不要忽略因果可见性。
 
+### W5b：PISCO 与 COCOM 的 decoder 序列顺序必须分开讨论；COCOM 论文图与公开 checkpoint 代码还存在不一致
+
+2026-09-29 重新核对原文后，发现此前把“所有 soft-compression decoder 都是 memory→question”当成共同前提是不严谨的。
+
+- **PISCO** 的公开 prompt 是 `Background: <memory> ... Question: <query>`，即近似 `[prefix, M, Q, A]`。在 causal self-attention 下，memory 位置看不到后置 query；query/answer 可以读取 memory。
+- **COCOM 原论文 Figure 2** 的 *Model Prompt* 图明确画成 **Query Embeddings 在前，Context Embeddings 在后**，即近似 `[prefix, Q, E_1, E_2, ..., A]`。若严格按该顺序执行，则 context-embedding hidden states 在 decoder 内可以 attend 到 query，因此输入 cache 本身仍是 query-independent，但其 decoder-side hidden states 可以被 query 条件化。
+- 但 **Naver 公布的 `cocom-v1-128-mistral-7b/modeling_cocom.py`** 中，generation prompt 实际构造为 `BOS + mem_tokens * top_k + [INST] + question + [/INST]`，即 `[M, Q, A]`。因此当前证据支持“论文示意图为 Q→M”，同时也必须记录“公开 checkpoint 实现为 M→Q”的不一致；在未核对训练时使用的历史 BERGEN/commit 前，不应把 Q→M 直接称为公开 COCOM checkpoint 的真实执行顺序。
+
+该差异在 causal decoder 中是**机制级变量**，不能视为纯 prompt 排版：
+
+- `[M,Q]`：`M` 不能读取 `Q`，query-conditioned computation 主要发生在后续 query/answer states；
+- `[Q,M]`：每个 `M_i` 可读取 `Q` 及更早的 `M_{<i}`，decoder 本身就提供了一次 query-conditioned latent transformation，同时保持离线 cache 可复用；
+- 因此“memory residual 更新小”的解释、memory-write blocking、activation patching 等实验都必须同时报告实际序列顺序。
+
+当前仓库已经有 `src/prompt.py` 的 **D2 = question first**：`Question:{query}\n\nBackground:\n{slots}`，而 D0 是 PISCO-identical 的 memory-first。后续优先把 **D0 vs D2** 提升为正式 causal-order ablation：保持同一 cache、同一 decoder、同一 token budget 与训练预算，仅改变 `M/Q` 顺序。D2 可视为“COCOM Figure-2-style ordering”诊断，但在论文/报告中不要把它写成“COCOM checkpoint exact prompt”，除非后续找到训练代码/commit 证明一致。
+
+参考：COCOM, Figure 2 / §3.2；Naver HuggingFace `cocom-v1-128-mistral-7b/modeling_cocom.py` 的 `generate_from_text` prompt 构造。
+
 ### W6：缩放不是只动写路径的纯净机制干预
 
 正比例缩放下 RMSNorm 的尺度不变性仅在忽略 epsilon 时近似成立。即便初层归一化方向近似不变，残差更新后：
