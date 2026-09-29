@@ -139,6 +139,8 @@ Stage C 的数值负结果可以保留。单 seed 的配对 CI 衡量给定训�
 
 参考：COCOM, Figure 2 / §3.2；Naver HuggingFace `cocom-v1-128-mistral-7b/modeling_cocom.py` 的 `generate_from_text` prompt 构造。
 
+详细的 D0/D2 测试→训练 gate、counterfactual sensitivity、运行脚本与 2×2 matched-LoRA 方案见：[CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md](CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md)。
+
 ### W6：缩放不是只动写路径的纯净机制干预
 
 正比例缩放下 RMSNorm 的尺度不变性仅在忽略 epsilon 时近似成立。即便初层归一化方向近似不变，残差更新后：
