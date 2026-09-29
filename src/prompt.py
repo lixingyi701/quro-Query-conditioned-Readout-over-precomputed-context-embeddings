@@ -1,19 +1,14 @@
-"""Decoder-side prompt assembly, kept token-identical to PISCO's.
+"""Decoder-side prompt assembly.
 
-QuRO's generator *is* PISCO's decoder, so the prompt must be the one that decoder
-was trained on (``third_party/modelling_pisco.py:1036``).  Anything else throws
-away the warm start and makes the main table incomparable with the PISCO
-baseline.  The only change is the number of memory slots: PISCO emits ``k * m``
-of them, QuRO emits its readout budget ``B``.
+D0 preserves PISCO's memory-before-question interface
+(``third_party/modelling_pisco.py:1036``). The published decoder adapter was
+trained on that order, so D2's question-before-memory zero-shot behavior also
+reflects interface mismatch. The memory slot budget may differ from PISCO.
 
-``DecoderInputMode`` covers the "does the decoder still need the question in
-plain text?" question.  In every prior soft-compression system the answer is
-trivially yes: the compressed tokens are query-agnostic, so matching evidence
-against the question is work the decoder has to do.  QuRO moves that matching
-into the readout, which makes ``D1`` -- same prompt, question text removed --
-both a meaningful ablation and a usable training regime: with no plain-text
-query, the only path for query information is through the soft tokens, so the
-loss cannot go down unless the readout genuinely conditions on the query.
+D1 removes the plain-text question, forcing query information to arrive through
+the soft tokens in the current QuRO setup. D2 instead changes causal order:
+the decoder can condition memory-position states on the preceding question.
+Both experiments retain query-independent offline document embeddings.
 """
 
 from __future__ import annotations
