@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
+| [`READER_CAUSAL_ORDER_EXECUTION_PLAN.md`](READER_CAUSAL_ORDER_EXECUTION_PLAN.md) | **当前执行方案**：证据读取与 D0/D2 因果顺序的测试→训练门槛、运行步骤与停止条件 |
 | [`QURO_V0.1_IMPLEMENTATION_PLAN.md`](QURO_V0.1_IMPLEMENTATION_PLAN.md) | v0.1 实施方案 + §10.5–§10.8 实施过程中的全部实测发现 |
 | [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) | **v0.2 实验结果与分析**（主文档）：ξ_off 扫描、D1 实验、定位讨论 |
 | [`QURO_RELATED_WORK.md`](QURO_RELATED_WORK.md) | 相关工作梳理与切割 |
@@ -13,7 +14,7 @@
 
 原始实验数据在 [`../results/`](../results/)。
 
-## 当前状态（2026-09-16）
+## 历史状态快照（2026-09-16；最新执行方案见上表）
 
 - **机制已证实**：D1 下 query 条件读出比 query 无关版高 20.85 个 EM 点（p=1.8e-96）
 - **但在标准设定下冗余**：D0 下 decoder 拿着问题明文，自己就完成证据匹配
