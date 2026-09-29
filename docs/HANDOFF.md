@@ -300,7 +300,7 @@ src/ scripts/ tests/   代码
 
 ### docs 索引
 
-- [`CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md`](CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md) — **最新**：D0/D2 causal-order 测试→训练 gate、机制 probe 与 matched LoRA 2×2 对照
+- [`READER_CAUSAL_ORDER_EXECUTION_PLAN.md`](READER_CAUSAL_ORDER_EXECUTION_PLAN.md) — **当前执行文档**：统一 raw–memory、逐跳、D0/D2 拓扑与任务功能干预；根据功能证据选择 matched LoRA 或 reader-state 蒸馏。
 
 - [`ARM_MATRIX_RESULTS.md`](ARM_MATRIX_RESULTS.md) — 臂定义、四格分解、B 扫描
 - [`TRAINING_RECIPE_RESULTS.md`](TRAINING_RECIPE_RESULTS.md) — **最新**：训练配方、KL 蒸馏、问题压缩（37 次运行 + 24 组配对检验）
