@@ -1,9 +1,9 @@
 """Test-first D0/D2 causal-order probe for PISCO full-cache decoding.
 
 The published PISCO decoder LoRA was trained on D0 (memory before question), so
-zero-shot D2 QA is deliberately NOT the test->train gate. The probe asks whether
+zero-shot D2 QA is deliberately NOT the topology diagnostic gate. The probe asks whether
 question-first order creates query-conditioned memory states under exact prompt-
-position controls. See docs/CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md.
+position controls. See docs/READER_CAUSAL_ORDER_EXECUTION_PLAN.md.
 """
 from __future__ import annotations
 import argparse, json, os, random, sys, time
@@ -104,6 +104,8 @@ def pack(lm,tok,builder,cache,ids,query,target,device):
 def run_trace(lm,tok,builder,cache,ids,query,target,device):
     prompt,qpos,packed=pack(lm,tok,builder,cache,ids,query,target,device)
     with co.capture_block_trace(lm,prompt.slot_positions,qpos) as box: out=lm(**packed,use_cache=False)
+    if not torch.isfinite(out.loss).all():
+        raise ValueError("non-finite answer loss; inspect prompt and rerun")
     return box["trace"],float(out.loss.detach().float().cpu()),prompt,qpos
 
 
@@ -121,8 +123,10 @@ def generate(lm,tok,builder,cache,ids,query,device,max_new):
 def matrix(records,mode,key): return np.asarray([r["modes"][mode][key] for r in records],dtype=float)
 
 def paired(a,b,seed):
-    aa=np.nanmean(a,axis=1); bb=np.nanmean(b,axis=1)
-    return {"mean_a":float(np.nanmean(aa)),"mean_b":float(np.nanmean(bb)),"paired":co.paired_bootstrap(aa,bb,seed=seed),"layer_mean_a":np.nanmean(a,axis=0).tolist(),"layer_mean_b":np.nanmean(b,axis=0).tolist()}
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise ValueError("non-finite diagnostic matrix; inspect traces and rerun")
+    aa=a.mean(axis=1); bb=b.mean(axis=1)
+    return {"mean_a":float(aa.mean()),"mean_b":float(bb.mean()),"paired":co.paired_bootstrap(aa,bb,seed=seed),"layer_mean_a":a.mean(axis=0).tolist(),"layer_mean_b":b.mean(axis=0).tolist()}
 
 
 def main():
@@ -159,14 +163,14 @@ def main():
     d0qm,d2qm=matrix(records,"D0","query_memory_cos"),matrix(records,"D2","query_memory_cos")
     d0dm,d2dm=matrix(records,"D0","delta_memory"),matrix(records,"D2","delta_memory")
     d0dq,d2dq=matrix(records,"D0","delta_query"),matrix(records,"D2","delta_query")
-    gate=co.training_gate(d0mq,d2mq,min_pairs=a.gate_min_pairs,min_sensitivity=a.gate_min_sensitivity,min_fold=a.gate_min_fold,min_layer_fraction=a.gate_min_layer_fraction,seed=a.seed)
-    summary={"n_pairs":len(records),"training_gate":gate,"primary_memory_query_sensitivity":paired(d2mq,d0mq,a.seed),"complementary_query_memory_sensitivity":paired(d0qm,d2qm,a.seed+1),"memory_update_D2_minus_D0":paired(d2dm,d0dm,a.seed+2),"query_update_D0_minus_D2":paired(d0dq,d2dq,a.seed+3),"mean_nll_D0":float(np.mean([r["modes"]["D0"]["qa_nll"] for r in records])),"mean_nll_D2":float(np.mean([r["modes"]["D2"]["qa_nll"] for r in records])),"qa_is_training_gate":False}
+    gate=co.topology_gate(d0mq,d2mq,min_pairs=a.gate_min_pairs,min_sensitivity=a.gate_min_sensitivity,min_fold=a.gate_min_fold,min_layer_fraction=a.gate_min_layer_fraction,seed=a.seed)
+    summary={"n_pairs":len(records),"topology_gate":gate,"primary_memory_query_sensitivity":paired(d2mq,d0mq,a.seed),"complementary_query_memory_sensitivity":paired(d0qm,d2qm,a.seed+1),"memory_update_D2_minus_D0":paired(d2dm,d0dm,a.seed+2),"query_update_D0_minus_D2":paired(d0dq,d2dq,a.seed+3),"mean_nll_D0":float(np.mean([r["modes"]["D0"]["qa_nll"] for r in records])),"mean_nll_D2":float(np.mean([r["modes"]["D2"]["qa_nll"] for r in records])),"qa_is_topology_gate":False}
     if a.generate:
         summary["qa_D0"]=metrics.aggregate([r["modes"]["D0"]["qa"] for r in records]); summary["qa_D2"]=metrics.aggregate([r["modes"]["D2"]["qa"] for r in records])
     with open(os.path.join(out,"pairs.jsonl"),"w",encoding="utf-8") as f:
         for r in records: f.write(json.dumps(r,ensure_ascii=False)+"\n")
     with open(os.path.join(out,"summary.json"),"w",encoding="utf-8") as f: json.dump(summary,f,ensure_ascii=False,indent=2)
-    manifest={"preset":a.preset,"queries":qfile,"cache_dir":cfg.data.cache_dir,"decoder":cfg.generator.name_or_path,"checkpoint":a.checkpoint,"pair_rule":"exact D0/D2 memory and query positions","seed":a.seed,"gate_thresholds":gate["thresholds"],"qa_is_training_gate":False}
+    manifest={"preset":a.preset,"queries":qfile,"cache_dir":cfg.data.cache_dir,"decoder":cfg.generator.name_or_path,"checkpoint":a.checkpoint,"pair_rule":"exact D0/D2 memory and query positions","seed":a.seed,"gate_thresholds":gate["thresholds"],"qa_is_topology_gate":False}
     with open(os.path.join(out,"manifest.json"),"w",encoding="utf-8") as f: json.dump(manifest,f,ensure_ascii=False,indent=2)
     print(json.dumps(gate,ensure_ascii=False,indent=2)); print("[done]",out)
 
