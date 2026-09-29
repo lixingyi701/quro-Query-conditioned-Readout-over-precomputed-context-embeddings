@@ -139,7 +139,7 @@ Stage C 的数值负结果可以保留。单 seed 的配对 CI 衡量给定训�
 
 参考：COCOM, Figure 2 / §3.2；Naver HuggingFace `cocom-v1-128-mistral-7b/modeling_cocom.py` 的 `generate_from_text` prompt 构造。
 
-详细的 D0/D2 测试→训练 gate、counterfactual sensitivity、运行脚本与 2×2 matched-LoRA 方案见：[CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md](CAUSAL_ORDER_D0_D2_TEST_TRAIN_PLAN.md)。
+D0/D2 拓扑诊断、功能干预与受控训练的修订执行方案见：[READER_CAUSAL_ORDER_EXECUTION_PLAN.md](READER_CAUSAL_ORDER_EXECUTION_PLAN.md)。
 
 ### W6：缩放不是只动写路径的纯净机制干预
 
