@@ -69,21 +69,33 @@ def test_gate():
     rng = np.random.default_rng(7)
     d0 = np.abs(rng.normal(1e-6, 2e-7, size=(48, 8)))
     d2 = np.abs(rng.normal(2e-3, 2e-4, size=(48, 8)))
-    go = co.training_gate(d0, d2, min_pairs=32, min_sensitivity=1e-4,
+    go = co.topology_gate(d0, d2, min_pairs=32, min_sensitivity=1e-4,
                           min_fold=3.0, min_layer_fraction=0.25, seed=3)
-    check("robust D2 query-conditioning opens the training gate",
-          go["decision"] == "GO_TRAIN", str(go["decision"]))
+    check("robust D2 query-conditioning opens the function-test gate",
+          go["decision"] == "GO_FUNCTION_TEST", str(go["decision"]))
     check("QA is explicitly absent from the gate", go["qa_is_gate"] is False)
 
-    hold = co.training_gate(d0, d0 * 1.01, min_pairs=32, min_sensitivity=1e-4,
+    hold = co.topology_gate(d0, d0 * 1.01, min_pairs=32, min_sensitivity=1e-4,
                             min_fold=3.0, min_layer_fraction=0.25, seed=3)
     check("near-floor effect does not justify a training run",
-          hold["decision"] == "HOLD_NO_TRAIN", str(hold["decision"]))
+          hold["decision"] == "HOLD_DIAGNOSTIC", str(hold["decision"]))
 
-    small = co.training_gate(d0[:8], d2[:8], min_pairs=32, min_sensitivity=1e-4,
+    invalid = d2.copy()
+    invalid[0, 0] = float("nan")
+    rerun = co.topology_gate(d0, invalid)
+    check("non-finite sensitivity invalidates the run",
+          rerun["decision"] == "RERUN_INVALID", str(rerun["decision"]))
+    try:
+        co.paired_bootstrap([1.0, float("inf")], [0.0, 0.0])
+    except ValueError:
+        check("bootstrap rejects non-finite pairs", True)
+    else:
+        check("bootstrap rejects non-finite pairs", False)
+
+    small = co.topology_gate(d0[:8], d2[:8], min_pairs=32, min_sensitivity=1e-4,
                              min_fold=3.0, min_layer_fraction=0.25, seed=3)
     check("too few pairs cannot open the training gate",
-          small["decision"] == "HOLD_NO_TRAIN", str(small["decision"]))
+          small["decision"] == "HOLD_DIAGNOSTIC", str(small["decision"]))
 
 
 if __name__ == "__main__":
