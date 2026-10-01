@@ -4,8 +4,9 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`READER_STATE_WORKSPACE_RUNBOOK.md`](READER_STATE_WORKSPACE_RUNBOOK.md) | **当前训练方案**：Direct-CE / Direct-State / W-CE，P₁ raw 教师缓存、实现与运行命令；不再要求 P3 准入，不进行位置效应实验 |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
-| [`READER_CAUSAL_ORDER_EXECUTION_PLAN.md`](READER_CAUSAL_ORDER_EXECUTION_PLAN.md) | **当前执行方案**：证据读取与 D0/D2 因果顺序的测试→训练门槛、运行步骤与停止条件 |
+| [`READER_CAUSAL_ORDER_EXECUTION_PLAN.md`](READER_CAUSAL_ORDER_EXECUTION_PLAN.md) | 历史诊断协议：P0–P3 因果顺序实验；后续训练决策以新的 Reader/Workspace 方案为准 |
 | [`READER_CAUSAL_ORDER_RESULTS.md`](READER_CAUSAL_ORDER_RESULTS.md) | **最新结果**（2026-10-01）：P0 缺口 +7.75、P1 定位到答案段且随段内位置增大、P2 拓扑 GO 但信号小、P3 受控版跨 decoder 不一致 |
 | [`QURO_V0.1_IMPLEMENTATION_PLAN.md`](QURO_V0.1_IMPLEMENTATION_PLAN.md) | v0.1 实施方案 + §10.5–§10.8 实施过程中的全部实测发现 |
 | [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) | **v0.2 实验结果与分析**（主文档）：ξ_off 扫描、D1 实验、定位讨论 |

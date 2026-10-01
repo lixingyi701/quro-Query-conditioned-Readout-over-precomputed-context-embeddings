@@ -1,5 +1,7 @@
 # QuRO：压缩证据读取与 D0/D2 因果顺序的测试—训练执行方案
 
+> 后续决策更新（2026-10-01）：P0–P3 保留为历史诊断协议。下一阶段执行 [Direct-CE / Direct-State / W-CE](READER_STATE_WORKSPACE_RUNBOOK.md)，不再以本文件的 P3 门槛作为这些训练的前提；不继续推进位置效应实验。
+
 > 2026-09-30 · 工作分支 `feat/selecom-infeasibility`  
 > 性质：待验证的实验协议；不是机制结论，也不是新架构实现清单。  
 > 本文整合 [Reader Trajectory 原案](https://github.com/lixingyi701/quro-Query-conditioned-Readout-over-precomputed-context-embeddings/commit/4babc66933b663532a21cdb661498b3370a25952) 与 [D0/D2 原案](https://github.com/lixingyi701/quro-Query-conditioned-Readout-over-precomputed-context-embeddings/commit/7e9eaa137d1018f2780396a7e4691eb55f66e6fa)，并更正两案的训练门槛。历史提交保留原文供追溯。
