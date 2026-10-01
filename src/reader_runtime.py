@@ -1,7 +1,7 @@
 """Shared provenance, loading, batches and evaluation for the three reader arms."""
 from __future__ import annotations
 
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 import json
 import math
 from pathlib import Path
@@ -72,6 +72,7 @@ def load_runtime(args, teacher=False):
     cfg.data.cache_dir = args.cache_dir or cfg.data.cache_dir
     cfg.data.train_file = args.train_file or cfg.data.train_file
     cfg.data.max_docs = args.max_docs
+    p1_prefer_teacher_output = cfg.data.prefer_teacher_output
     cfg.data.prefer_teacher_output = False
     cfg.decoder.query_text_dropout = 0.0
     cfg.train.grad_ckpt = False  # enabled explicitly and identically below
@@ -93,6 +94,7 @@ def load_runtime(args, teacher=False):
                       args.state_weight, args.workspace_tokens, args.cross_dim,
                       args.cross_heads, args.gate_init)
     reader = ReaderExperiment(base, spec).to(args.device)
+    reader.p1_prefer_teacher_output = p1_prefer_teacher_output
     if teacher:
         reader.requires_grad_(False)
         reader.eval()
@@ -118,13 +120,18 @@ def identity(args, cfg, cache, reader):
             "layers": list(reader.spec.layers), "hidden": reader.hidden}
 
 
-def dataset(path, cfg, cache, reader, limit=None, corpus=None):
-    ds = QuRODataset(path, reader.tok, cfg.data, limit=limit, corpus=corpus)
+def dataset(path, cfg, cache, reader, limit=None, corpus=None, target_policy="gold"):
+    if target_policy not in {"gold", "p1"}:
+        raise ValueError("unknown target policy")
+    prefer_teacher = target_policy == "p1" and reader.p1_prefer_teacher_output
+    # Evaluation and teacher-state caching always retain the default gold policy.
+    data_cfg = replace(cfg.data, prefer_teacher_output=prefer_teacher)
+    ds = QuRODataset(path, reader.tok, data_cfg, limit=limit, corpus=corpus)
     ids = [r["id"] for r in ds.rows]
     if not ids or len(set(ids)) != len(ids):
         raise ValueError("dataset must be nonempty with unique query IDs")
     for row in ds.rows:
-        if not row["answers"] or row["target_source"] != "gold":
+        if not row["answers"] or (not prefer_teacher and row["target_source"] != "gold"):
             raise ValueError("every row requires a gold answer")
         for doc in row["retrieved_doc_ids"]:
             if doc not in cache or (corpus is not None and doc not in corpus):

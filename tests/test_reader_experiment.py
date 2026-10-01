@@ -283,7 +283,7 @@ def test_cli_cache_train_eval_and_resume(tmp_path, monkeypatch):
     cfg.query_encoder.d_model = 32
     cfg.data.cache_dir = str(tmp_path / "latent")
     cfg.data.train_file = str(tmp_path / "train.jsonl")
-    cfg.data.prefer_teacher_output = False
+    cfg.data.prefer_teacher_output = True
     cfg.readout.cache_hidden = 32
     def model_factory(config, cache_hidden=None):
         base = tiny_base(dropout=.1)
@@ -296,16 +296,16 @@ def test_cli_cache_train_eval_and_resume(tmp_path, monkeypatch):
     p1.save(p1_path, step=3000)
     with LatentCacheWriter(cfg.data.cache_dir,
             CacheMetadata("synthetic", 8, 32, "float32", doc_max_length=128)) as writer:
-        for doc in ("d1", "d2"):
+        for doc in (f"d{i}" for i in range(10)):
             writer.add(doc, torch.randn(8, 32), source_token_count=10)
-    rows = [{"id": f"q{i}", "query": "Where born ?", "retrieved_doc_ids": ["d1", "d2"],
+    rows = [{"id": f"q{i}", "query": "Where born ?", "retrieved_doc_ids": [f"d{2*i}", f"d{2*i+1}"],
              "answers": ["Nanjing"], "teacher_output": "wrong", "gold_ranks": [0, 1],
              "hop_type": "bridge"} for i in range(5)]
     Path(cfg.data.train_file).write_text("\n".join(json.dumps(r) for r in rows[:3]))
     ev = tmp_path / "dev.jsonl"
     ev.write_text("\n".join(json.dumps(r) for r in rows[3:]))
     corpus = tmp_path / "corpus.jsonl"
-    corpus.write_text("\n".join(json.dumps({"doc_id": d, "text": "born Nanjing"}) for d in ("d1", "d2")))
+    corpus.write_text("\n".join(json.dumps({"doc_id": f"d{i}", "text": "born Nanjing"}) for i in range(10)))
     common = ["--init_checkpoint", str(p1_path), "--device", "cpu", "--layers", "1,2,3", "--batch_size", "2"]
     teacher = tmp_path / "teacher"
     ca = cli.parser().parse_args(["cache", *common, "--out_dir", str(teacher), "--corpus", str(corpus)])
@@ -329,14 +329,76 @@ def test_cli_cache_train_eval_and_resume(tmp_path, monkeypatch):
                 shutil.copyfile(path, out / "step1.pt")
         monkeypatch.setattr(cli, "save_checkpoint", snapshot)
         cli.train(a)
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["train_target_counts"] == {"gold": 3, "teacher": 0}
         last = torch.load(out / "checkpoint_last.pt", weights_only=False)
         ea = cli.parser().parse_args(["eval", "--checkpoint", str(out / "checkpoint_best.pt"),
             "--eval_file", str(ev), "--out_dir", str(out / "evaluation"), "--device", "cpu", "--gold_only"])
         cli.eval_checkpoint(ea)
         assert (out / "evaluation" / "predictions.json").exists()
         monkeypatch.setattr(cli, "save_checkpoint", original_save)
+        if arm == "direct-ce":
+            legacy = torch.load(out / "step1.pt", weights_only=False)
+            legacy["args"].pop("train_target")
+            torch.save(legacy, out / "step1.pt")
         ra = cli.parser().parse_args(argv + ["--resume", str(out / "step1.pt")])
         cli.train(ra)
         resumed = torch.load(out / "checkpoint_last.pt", weights_only=False)
         for name in last["weights"]:
             torch.testing.assert_close(last["weights"][name], resumed["weights"][name], rtol=0, atol=0)
+        diag_spec = importlib.util.spec_from_file_location("reader_diag",
+            Path(__file__).parents[1] / "scripts/diagnose_reader_experiment.py")
+        diag = importlib.util.module_from_spec(diag_spec)
+        diag_spec.loader.exec_module(diag)
+        if arm == "w-ce":
+            da = diag.parser().parse_args(["evidence", "--checkpoint", str(out / "checkpoint_last.pt"),
+                "--eval_file", str(ev), "--out_dir", str(out / "diag"), "--device", "cpu"])
+            diag.main(da)
+            report = json.loads((out / "diag/summary.json").read_text())
+            assert set(report["conditions"]) == {"correct", "mismatch", "disabled_cross"}
+        if arm == "direct-state":
+            da = diag.parser().parse_args(["state", "--checkpoints", str(out / "step1.pt"),
+                str(out / "checkpoint_last.pt"), "--teacher_cache", str(teacher),
+                "--out_dir", str(out / "diag"), "--limit", "2", "--grad_batches", "1", "--device", "cpu"])
+            diag.main(da)
+            report = json.loads((out / "diag/summary.json").read_text())
+            assert len(report["reports"]) == 2
+            assert report["reports"][0]["gradients"][0]["state_grad_norm"] > 0
+    # P1 target preference affects training only; eval NLL still uses gold.
+    p1run = tmp_path / "p1target"
+    args = cli.parser().parse_args(["train", *common, "--arm", "direct-ce", "--train_target", "p1",
+        "--out_dir", str(p1run), "--eval_file", str(ev), "--steps", "0", "--max_new_tokens", "2"])
+    cli.train(args)
+    assert json.loads((p1run / "manifest.json").read_text())["train_target_counts"] == {"gold": 0, "teacher": 3}
+    cfg2, cache2, reader2 = reader_runtime.load_runtime(args)
+    train_ds = reader_runtime.dataset(cfg.data.train_file, cfg2, cache2, reader2, target_policy="p1")
+    eval_ds = reader_runtime.dataset(str(ev), cfg2, cache2, reader2)
+    assert train_ds.rows[0]["target"] == "wrong"
+    assert eval_ds.rows[0]["target"] == "Nanjing"
+
+
+def test_diagnostic_donors_and_gradient_statistics():
+    spec = importlib.util.spec_from_file_location("reader_diag",
+        Path(__file__).parents[1] / "scripts/diagnose_reader_experiment.py")
+    diag = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(diag)
+    rows = [{"id": str(i), "query": "q", "answers": ["a"], "retrieved_doc_ids": [str(i)]}
+            for i in range(4)]
+    changed, mapping = diag.mismatch_rows(rows)
+    assert len({m["donor_id"] for m in mapping}) == 4
+    for old, new in zip(rows, changed):
+        assert old["id"] == new["id"] and old["answers"] == new["answers"]
+        assert not set(old["retrieved_doc_ids"]) & set(new["retrieved_doc_ids"])
+    with pytest.raises(ValueError):
+        diag.mismatch_rows([rows[0], {**rows[1], "retrieved_doc_ids": ["0"]}])
+    x = torch.tensor([1., 2.], requires_grad=True)
+    g = diag.gradient_stats(x.sum(), -2 * x.sum(), [x], .1)
+    assert g["gradient_cosine"] == pytest.approx(-1.)
+    assert g["weighted_state_to_ce_ratio"] == pytest.approx(.2)
+    _, reader, _ = make_reader("w-ce")
+    saved = [block.gate.clone() for block in reader.cross.values()]
+    with pytest.raises(RuntimeError):
+        with diag.disabled_cross(reader):
+            assert all(block.gate == 0 for block in reader.cross.values())
+            raise RuntimeError("check finally")
+    assert all(torch.equal(before, block.gate) for before, block in zip(saved, reader.cross.values()))

@@ -49,6 +49,8 @@ def parser():
             p.add_argument("--arm", choices=["direct-ce", "direct-state", "w-ce"], required=True)
             p.add_argument("--state_weight", type=float, default=0.1)
             p.add_argument("--teacher_cache")
+            p.add_argument("--train_target", choices=["gold", "p1"], default="gold",
+                           help="p1 inherits the checkpoint's teacher-output preference; eval always uses gold")
             p.add_argument("--workspace_tokens", type=int, default=16)
             p.add_argument("--cross_dim", type=int, default=512)
             p.add_argument("--cross_heads", type=int, default=8)
@@ -155,7 +157,8 @@ def train(a):
     cfg, cache, reader = load_runtime(a)
     provenance = identity(a, cfg, cache, reader)
     provenance["eval_file_sha256"] = file_hash(a.eval_file)
-    ds = dataset(cfg.data.train_file, cfg, cache, reader, a.limit_train)
+    ds = dataset(cfg.data.train_file, cfg, cache, reader, a.limit_train,
+                 target_policy=getattr(a, "train_target", "gold"))
     val = dataset(a.eval_file, cfg, cache, reader, a.eval_samples)
     # Check ALL eval IDs, not only the checkpoint-selection prefix.
     all_val = dataset(a.eval_file, cfg, cache, reader)
@@ -183,7 +186,9 @@ def train(a):
     best, start = {"score": -float("inf"), "step": None}, 0
     if a.resume:
         ckpt = torch.load(a.resume, map_location="cpu", weights_only=False)
-        if training_signature(argparse.Namespace(**ckpt["args"])) != training_signature(a):
+        old_args = dict(ckpt["args"])
+        old_args.setdefault("train_target", "gold")
+        if training_signature(argparse.Namespace(**old_args)) != training_signature(a):
             raise ValueError("resume arguments differ from the saved trajectory")
         if ckpt["provenance"] != provenance:
             raise ValueError("resume provenance changed")
@@ -198,6 +203,12 @@ def train(a):
                 "trainable_decoder": sum(p.numel() for p in decoder_params),
                 "trainable_workspace": sum(p.numel() for p in added),
                 "effective_batch_size": a.batch_size * a.grad_accum,
+                "train_target_policy": getattr(a, "train_target", "gold"),
+                "p1_prefer_teacher_output": reader.p1_prefer_teacher_output,
+                "train_target_counts": {source: sum(r["target_source"] == source for r in ds.rows)
+                                        for source in ("gold", "teacher")},
+                "train_targets_differ_from_first_gold": sum(r["target"].strip() != r["answers"][0].strip()
+                                                             for r in ds.rows),
                 "evaluation_note": "dev selection only; independent test remains untouched"}
     atomic_json(out / "manifest.json", manifest)
     val_loader = loader(val, cfg, cache, reader, a.eval_batch_size, a.num_workers)

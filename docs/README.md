@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`READER_RECOVERY_RUNBOOK.md`](READER_RECOVERY_RUNBOOK.md) | **当前行动**：首轮退化后的 W 证据依赖、固定样本状态/梯度诊断、目标与学习率短程对照；保留原 best 规则 |
 | [`READER_STATE_WORKSPACE_RUNBOOK.md`](READER_STATE_WORKSPACE_RUNBOOK.md) | **当前训练方案**：Direct-CE / Direct-State / W-CE，P₁ raw 教师缓存、实现与运行命令；不再要求 P3 准入，不进行位置效应实验 |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
 | [`READER_CAUSAL_ORDER_EXECUTION_PLAN.md`](READER_CAUSAL_ORDER_EXECUTION_PLAN.md) | 历史诊断协议：P0–P3 因果顺序实验；后续训练决策以新的 Reader/Workspace 方案为准 |
