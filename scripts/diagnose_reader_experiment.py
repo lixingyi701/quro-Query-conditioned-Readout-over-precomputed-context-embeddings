@@ -14,6 +14,7 @@ import torch
 from torch.nn import functional as F
 
 from src.causal_order import paired_bootstrap
+from src.baselines import _flatten
 from src.data import move_to_device
 from src.reader_experiment import StateTargets, cosine_state_loss, file_hash, row_key
 from src.reader_runtime import (atomic_json, dataset, environment, evaluate, identity,
@@ -74,8 +75,8 @@ def mismatch_rows(rows):
 
 @contextmanager
 def disabled_cross(reader):
-    if reader.spec.arm != "w-ce":
-        raise ValueError("disabled-cross control is W-only")
+    if not reader.cross:
+        raise ValueError("reader has no residual branch")
     saved = {k: block.gate.detach().clone() for k, block in reader.cross.items()}
     try:
         with torch.no_grad():
@@ -86,6 +87,26 @@ def disabled_cross(reader):
         with torch.no_grad():
             for k, block in reader.cross.items():
                 block.gate.copy_(saved[k])
+
+
+@contextmanager
+def branch_mismatch(reader, cache, mapping):
+    """Change only the added reader's Z; preserve every D0 input embedding."""
+    if reader.spec.arm != "direct-read":
+        raise ValueError("branch mismatch requires direct-read")
+    donors = {str(m["id"]): m["donor_docs"] for m in mapping}
+    original_pack = reader.pack
+    def pack(batch, **kwargs):
+        result = original_pack(batch, **kwargs)
+        latent, mask, _ = cache.get_many([donors[str(r["id"])] for r in batch["raw"]],
+                                        device=result["z"].device)
+        result["branch_z"], result["branch_zmask"] = _flatten(latent, mask)
+        return result
+    reader.pack = pack
+    try:
+        yield
+    finally:
+        del reader.pack  # restore the class's bound method
 
 
 def evidence(a, out):
@@ -106,7 +127,10 @@ def evidence(a, out):
         run("mismatch")
     finally:
         ds.rows = original_rows
-    if reader.spec.arm == "w-ce":
+    if reader.spec.arm == "direct-read":
+        with branch_mismatch(reader, cache, mapping):
+            run("branch_mismatch")
+    if reader.cross:
         with disabled_cross(reader):
             run("disabled_cross")
     contrasts = {}

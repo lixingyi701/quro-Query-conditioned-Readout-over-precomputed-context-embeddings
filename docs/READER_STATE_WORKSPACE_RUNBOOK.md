@@ -1,5 +1,7 @@
 # 固定 Z：Direct-CE / Direct-State / W-CE 执行说明
 
+> 后续结果与停止决定见 [发布版起点复审](READER_RESET_REVIEW.md)。本轮三臂及低LR复验均未建立State/W增益，不默认重跑。
+
 2026-10-01；基础提交 `7f477eb`；实现分支 `feat/reader-state-workspace`。
 
 2026-10-02 追加：[首轮退化后的诊断与短程修复](READER_RECOVERY_RUNBOOK.md)。本文件保留第一轮协议；不要直接按第 6 节重跑长训练。新增目标选项仅用于另行记录的短程对照，默认行为仍与首轮一致。

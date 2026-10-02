@@ -33,7 +33,7 @@ class ReaderSpec:
 
     def validate(self, depth):
         self.layers = tuple(self.layers)
-        if self.arm not in {"direct-ce", "direct-state", "w-ce"}:
+        if self.arm not in {"direct-ce", "direct-state", "w-ce", "direct-read", "direct-mlp"}:
             raise ValueError("unknown reader arm")
         if not self.layers or tuple(sorted(set(self.layers))) != self.layers:
             raise ValueError("layers must be nonempty, unique and increasing")
@@ -108,6 +108,24 @@ class CrossRead(nn.Module):
         return w + (self.gate * self.out(read)).to(w.dtype)
 
 
+class AnswerMLP(nn.Module):
+    """Approximately parameter-matched control: no extra access to Z.
+
+    Its input can already contain evidence through the original D0 backbone.
+    Thus this is an adaptation-capacity control, NOT a document-free model.
+    """
+    def __init__(self, hidden, dim, gate):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden)
+        self.up = nn.Linear(hidden, 2 * dim, bias=False)
+        self.out = nn.Linear(2 * dim, hidden, bias=False)
+        nn.init.zeros_(self.out.weight)
+        self.gate = nn.Parameter(torch.tensor(float(gate)))
+
+    def forward(self, h, _z, _mask):
+        return h + (self.gate * self.out(F.silu(self.up(self.norm(h.float()))))).to(h.dtype)
+
+
 class ReaderExperiment(nn.Module):
     """Hold the LM normally so .train(), .to() and parameter groups are explicit."""
     def __init__(self, base, spec):
@@ -128,7 +146,24 @@ class ReaderExperiment(nn.Module):
             self.cross.update({str(l): CrossRead(self.hidden, spec.cross_dim,
                                                 spec.cross_heads, spec.gate_init)
                                for l in spec.layers})
+        elif spec.arm in {"direct-read", "direct-mlp"}:
+            for layer in spec.layers:
+                self.cross[str(layer)] = (CrossRead(self.hidden, spec.cross_dim,
+                    spec.cross_heads, spec.gate_init) if spec.arm == "direct-read"
+                    else AnswerMLP(self.hidden, spec.cross_dim, spec.gate_init))
+        self.decoder_frozen = False
         self._active = False
+
+    def freeze_decoder(self):
+        self.decoder_frozen = True
+        self.lm.requires_grad_(False)
+        self.lm.eval()
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.decoder_frozen:
+            self.lm.eval()  # no LoRA dropout in the frozen reference path
+        return self
 
     def workspace_prompt(self, query):
         builder = self.builders["AG"]
@@ -201,6 +236,31 @@ class ReaderExperiment(nn.Module):
                 h = output[0] if isinstance(output, (tuple, list)) else output
                 wpos = packed["wpos"]
                 changed = False
+                if self.spec.arm in {"direct-read", "direct-mlp"}:
+                    # Prefill/teacher forcing: modify only the predictor of the first
+                    # answer token and subsequent answer-side positions. Cached
+                    # generation: its single new token is also an answer predictor.
+                    if h.size(1) == 1 and int(packed["anchor"].min()) > 0:
+                        active = torch.ones(h.shape[:2], dtype=torch.bool, device=h.device)
+                    else:
+                        active = torch.arange(h.size(1), device=h.device)[None] >= packed["anchor"][:, None]
+                        active = active & packed["inputs"]["attention_mask"][:, :h.size(1)].bool()
+                    # Pack answer positions per example. Project Z once per
+                    # example, not once per answer token (important at H=4096).
+                    counts = active.sum(1)
+                    width = int(counts.max())
+                    if width:
+                        offsets = torch.arange(width, device=h.device)[None]
+                        starts = active.long().argmax(1)[:, None]
+                        cols = (starts + offsets).clamp_max(h.size(1) - 1)
+                        rows = torch.arange(h.size(0), device=h.device)[:, None].expand_as(cols)
+                        keep = offsets < counts[:, None]
+                        z = packed.get("branch_z", packed["z"])
+                        zm = packed.get("branch_zmask", packed["zmask"])
+                        values = self.cross[str(layer)](h[rows, cols], z, zm)
+                        h = h.clone()
+                        h[rows[keep], cols[keep]] = values[keep]
+                        changed = True
                 if wpos is not None and h.size(1) > int(wpos.max()):
                     rows = torch.arange(h.size(0), device=h.device)[:, None]
                     w = self.cross[str(layer)](h[rows, wpos], packed["z"], packed["zmask"])
@@ -220,7 +280,7 @@ class ReaderExperiment(nn.Module):
             return run
         try:
             for layer in self.spec.layers:
-                if capture or packed["wpos"] is not None:
+                if capture or packed["wpos"] is not None or self.spec.arm in {"direct-read", "direct-mlp"}:
                     handles.append(self.blocks[layer - 1].register_forward_hook(hook(layer)))
             yield states
         finally:

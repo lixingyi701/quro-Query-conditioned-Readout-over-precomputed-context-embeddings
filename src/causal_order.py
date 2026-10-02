@@ -180,8 +180,12 @@ def paired_bootstrap(a: Sequence[float], b: Sequence[float], n_resamples: int = 
         raise ValueError("paired bootstrap needs at least one pair")
     d = x - y
     rng = np.random.default_rng(seed)
-    index = rng.integers(0, d.size, size=(n_resamples, d.size))
-    means = d[index].mean(axis=1)
+    # A full 30k-row target audit otherwise allocates ~1.9GB for index + d[index].
+    # Chunking preserves the RNG stream and the per-resample reduction order.
+    means = np.concatenate([
+        d[rng.integers(0, d.size, size=(min(64, n_resamples-start), d.size))].mean(axis=1)
+        for start in range(0, n_resamples, 64)
+    ])
     return {"delta": float(d.mean()), "lo": float(np.percentile(means, 2.5)),
             "hi": float(np.percentile(means, 97.5)), "n": int(d.size)}
 

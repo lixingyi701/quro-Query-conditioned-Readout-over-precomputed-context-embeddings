@@ -77,7 +77,7 @@ def adapt_row(row: Dict[str, Any], cfg, idx: int) -> Dict[str, Any]:
 
     answers = _answers(row)
     teacher = row.get("teacher_output", row.get("teacher_answer"))
-    use_teacher = teacher is not None and cfg.prefer_teacher_output
+    use_teacher = teacher is not None and bool(str(teacher).strip()) and cfg.prefer_teacher_output
     target = str(teacher) if use_teacher else (answers[0] if answers else "")
     if not target:
         raise ValueError(f"row {row_id} has neither teacher_output nor answer")

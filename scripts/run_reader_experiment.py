@@ -1,6 +1,7 @@
-"""CLI for train-only raw targets and matched Direct-CE / Direct-State / W-CE.
+"""CLI for matched reader experiments and audited sequence-teacher targets.
 
-See docs/READER_STATE_WORKSPACE_RUNBOOK.md. Single process, one visible GPU.
+Current protocol: docs/ANSWER_EVIDENCE_SUPERVISION_RUNBOOK.md.
+Historical arms remain reproducible. Single process, one visible GPU.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import numpy as np
 import torch
 
 from src.data import load_corpus, move_to_device
+from src.answer_evidence import validate_target_manifest
 from src.reader_experiment import StateTargets, cosine_state_loss, file_hash, row_key
 from src.reader_runtime import (EpochBatches, atomic_json, dataset, environment, evaluate,
     identity, load_runtime, loader, restore_rng, save_checkpoint, seed_all, training_signature)
@@ -27,7 +29,8 @@ def parser():
     sub = top.add_subparsers(dest="command", required=True)
     for command in ("cache", "train"):
         p = sub.add_parser(command)
-        p.add_argument("--init_checkpoint", required=True, help="P1 checkpoint; weights-only initialization")
+        p.add_argument("--init_source", choices=["p1", "published"], default="p1")
+        p.add_argument("--init_checkpoint", help="P1 weights; forbidden with --init_source published")
         p.add_argument("--preset", default="pisco_hotpot")
         p.add_argument("--generator_path")
         p.add_argument("--cache_dir")
@@ -46,11 +49,13 @@ def parser():
         if command == "cache":
             p.add_argument("--corpus", nargs="+", required=True)
         else:
-            p.add_argument("--arm", choices=["direct-ce", "direct-state", "w-ce"], required=True)
+            p.add_argument("--arm", choices=["direct-ce", "direct-state", "w-ce", "direct-read", "direct-mlp"], required=True)
+            p.add_argument("--freeze_decoder", action="store_true", help="freeze weights AND disable decoder dropout")
             p.add_argument("--state_weight", type=float, default=0.1)
             p.add_argument("--teacher_cache")
-            p.add_argument("--train_target", choices=["gold", "p1"], default="gold",
-                           help="p1 inherits the checkpoint's teacher-output preference; eval always uses gold")
+            p.add_argument("--train_target", choices=["gold", "p1", "teacher"], default="gold",
+                           help="teacher uses nonempty teacher_output when present, else gold; p1 inherits P1 preference; eval stays gold")
+            p.add_argument("--target_manifest", help="completed answer-evidence export manifest; required for teacher targets")
             p.add_argument("--workspace_tokens", type=int, default=16)
             p.add_argument("--cross_dim", type=int, default=512)
             p.add_argument("--cross_heads", type=int, default=8)
@@ -65,6 +70,8 @@ def parser():
             p.add_argument("--grad_checkpointing", action="store_true")
             p.add_argument("--eval_file", required=True, help="dev only during method selection")
             p.add_argument("--eval_every", type=int, default=250)
+            p.add_argument("--early_stop_patience", type=int, default=0,
+                           help="stop after this many evaluations without a strict QA improvement; 0 disables")
             p.add_argument("--eval_samples", type=int, default=500)
             p.add_argument("--eval_batch_size", type=int, default=8)
             p.add_argument("--max_new_tokens", type=int, default=32)
@@ -101,7 +108,7 @@ def build_targets(a):
     batches = loader(ds, cfg, cache, reader, a.batch_size, a.num_workers)
     shape = (len(ds), len(reader.spec.layers), reader.hidden)
     meta = {**provenance, "shape": list(shape), "split": "train", "complete": False,
-            "teacher": "frozen P1 raw", "contains_answer": False,
+            "teacher": f"frozen {getattr(a, 'init_source', 'p1')} raw", "contains_answer": False,
             "corpus_sha256": {str(Path(p).resolve()): file_hash(p) for p in a.corpus},
             "environment": environment(), "args": vars(a)}
     atomic_json(out / "manifest.json", meta)
@@ -140,6 +147,20 @@ def build_targets(a):
 
 
 def train(a):
+    supervision = None
+    if a.train_target == "teacher":
+        if not a.target_manifest:
+            raise ValueError("--train_target teacher requires --target_manifest")
+        if a.init_source != "published" or a.arm != "direct-ce":
+            raise ValueError("sequence-target control requires published initialization and direct-ce")
+    elif a.target_manifest:
+        raise ValueError("--target_manifest is only used with --train_target teacher")
+    if a.early_stop_patience < 0:
+        raise ValueError("early_stop_patience must be nonnegative")
+    if a.arm in {"direct-read", "direct-mlp"} and not a.freeze_decoder:
+        raise ValueError("reset pilot isolates the reader: use --freeze_decoder for direct-read/direct-mlp")
+    if a.freeze_decoder and a.arm in {"direct-ce", "direct-state"} and a.steps > 0:
+        raise ValueError("frozen Direct has no trainable parameters; only --steps 0 is valid")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("single-process runner: launch one arm per GPU; do not use torchrun")
     if a.steps < 0 or min(a.grad_accum, a.eval_every, a.save_every, a.log_every) < 1:
@@ -157,8 +178,16 @@ def train(a):
     cfg, cache, reader = load_runtime(a)
     provenance = identity(a, cfg, cache, reader)
     provenance["eval_file_sha256"] = file_hash(a.eval_file)
+    if a.train_target == "teacher":
+        supervision = validate_target_manifest(a.target_manifest, cfg.data.train_file, a.eval_file, provenance)
+        provenance["sequence_target_manifest_sha256"] = supervision["manifest_sha256"]
     ds = dataset(cfg.data.train_file, cfg, cache, reader, a.limit_train,
                  target_policy=getattr(a, "train_target", "gold"))
+    if a.train_target == "teacher":
+        def tokens(text):
+            return reader.tok(" " + text.strip(), add_special_tokens=False)["input_ids"][:cfg.data.max_answer_len]
+        if not any(tokens(r["target"]) != tokens(r["answers"][0]) for r in ds.rows):
+            raise ValueError("teacher targets are token-identical to gold; do not repeat an equivalent training arm")
     val = dataset(a.eval_file, cfg, cache, reader, a.eval_samples)
     # Check ALL eval IDs, not only the checkpoint-selection prefix.
     all_val = dataset(a.eval_file, cfg, cache, reader)
@@ -178,9 +207,12 @@ def train(a):
     decoder_params = [p for p in reader.lm.parameters() if p.requires_grad]
     decoder_ids = {id(p) for p in decoder_params}
     added = [p for p in params if id(p) not in decoder_ids]
-    groups = [{"params": decoder_params, "lr": a.decoder_lr, "name": "decoder_lora"}]
+    groups = [{"params": decoder_params, "lr": a.decoder_lr, "name": "decoder_lora"}] if decoder_params else []
     if added:
         groups.append({"params": added, "lr": a.workspace_lr, "name": "workspace"})
+    if not groups:
+        # A zero-step frozen reference still uses the same checkpoint/eval format.
+        groups = [{"params": [], "lr": a.decoder_lr, "name": "frozen_reference"}]
     optimizer = torch.optim.AdamW(groups, weight_decay=a.weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda_factory(a.steps, a.warmup_ratio))
     best, start = {"score": -float("inf"), "step": None}, 0
@@ -204,6 +236,7 @@ def train(a):
                 "trainable_workspace": sum(p.numel() for p in added),
                 "effective_batch_size": a.batch_size * a.grad_accum,
                 "train_target_policy": getattr(a, "train_target", "gold"),
+                "sequence_supervision": supervision,
                 "p1_prefer_teacher_output": reader.p1_prefer_teacher_output,
                 "train_target_counts": {source: sum(r["target_source"] == source for r in ds.rows)
                                         for source in ("gold", "teacher")},
@@ -219,14 +252,20 @@ def train(a):
         record = {"step": step, **summary}
         with open(out / "validation.jsonl", "a") as f:
             f.write(json.dumps(record) + "\n")
+        if step == 0:
+            atomic_json(out / "step_zero_predictions.json", rows)
         print(f"[validation] {record}", flush=True)
         if score > best["score"]:
-            best = {"score": score, "step": step, "metric": a.select_metric}
+            best = {"score": score, "step": step, "metric": a.select_metric, "bad_evals": 0}
             save_checkpoint(out / "checkpoint_best.pt", reader, a, provenance, step, best, optimizer, scheduler)
             atomic_json(out / "best_predictions.json", rows)
             atomic_json(out / "best_checkpoint.json", best)
+        else:
+            best["bad_evals"] = best.get("bad_evals", 0) + 1
     if not a.resume:
         validation(0)  # Includes step zero in best selection; continuation can regress.
+    elif a.early_stop_patience and best.get("bad_evals", 0) >= a.early_stop_patience:
+        raise ValueError("this trajectory already met its stopping rule; do not resume past early stopping")
     sampler = EpochBatches(len(ds), a.batch_size, a.seed, start * a.grad_accum,
                            (a.steps - start) * a.grad_accum)
     batches = iter(loader(ds, cfg, cache, reader, a.batch_size, a.num_workers, sampler))
@@ -234,6 +273,10 @@ def train(a):
     started = time.perf_counter()
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
+    completed_step, stopped_early = start, False
+    def grad_norm(parameters):
+        norms = [p.grad.float().norm() for p in parameters if p.grad is not None]
+        return torch.stack(norms).norm() if norms else torch.tensor(0.)
     for step in range(start + 1, a.steps + 1):
         optimizer.zero_grad(set_to_none=True)
         totals = {"ce": 0., "state": 0., "loss": 0.}
@@ -254,8 +297,8 @@ def train(a):
                 for key, value in (("ce", ce), ("state", state), ("loss", loss)):
                     totals[key] += float(value.detach()) / a.grad_accum
             del result, ce, state, loss, captured, packed
-        decoder_grad = torch.stack([p.grad.float().norm() for p in decoder_params if p.grad is not None]).norm()
-        added_grad = torch.stack([p.grad.float().norm() for p in added if p.grad is not None]).norm() if added else torch.tensor(0.)
+        decoder_grad = grad_norm(decoder_params)
+        added_grad = grad_norm(added)
         norm = torch.nn.utils.clip_grad_norm_(params, a.grad_clip, error_if_nonfinite=True)
         optimizer.step()
         scheduler.step()
@@ -268,11 +311,16 @@ def train(a):
                 f.write(json.dumps(record) + "\n")
         if step % a.eval_every == 0 or step == a.steps:
             validation(step)
-        if step % a.save_every == 0 or step == a.steps:
+            stopped_early = bool(a.early_stop_patience and best.get("bad_evals", 0) >= a.early_stop_patience)
+        completed_step = step
+        if step % a.save_every == 0 or step == a.steps or stopped_early:
             save_checkpoint(out / "checkpoint_last.pt", reader, a, provenance, step, best, optimizer, scheduler)
+        if stopped_early:
+            break
     if a.steps == 0:
         save_checkpoint(out / "checkpoint_last.pt", reader, a, provenance, 0, best, optimizer, scheduler)
-    atomic_json(out / "completion.json", {"completed_step": a.steps, "best": best,
+    atomic_json(out / "completion.json", {"completed_step": completed_step, "planned_steps": a.steps,
+                "stopped_early": stopped_early, "best": best,
                 "seconds_after_initial_eval": time.perf_counter() - started,
                 "peak_allocated_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else None})
 

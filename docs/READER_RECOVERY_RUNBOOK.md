@@ -1,5 +1,8 @@
 # Reader 首轮退化：诊断与短程修复
 
+> **2026-10-02 后续决定：** 低学习率3000步仍无State QA收益；停止默认延长State/W路线。
+> 新工作以 [发布版起点复审与运行说明](READER_RESET_REVIEW.md) 为准。本文件保留为历史诊断记录，不再默认触发第6节的训练建议。
+
 2026-10-02。分支 `feat/reader-state-workspace`。本文件是首轮三臂训练后的追加探索方案，不改写原预登记或替换原 best 结果。
 
 ## 1. 当前问题与边界
@@ -68,7 +71,7 @@ CUDA_VISIBLE_DEVICES=2 python scripts/diagnose_reader_experiment.py evidence \
 
 固定同一批问题，运行三种条件：正确 Z、其他问题的 Z、将所有 CA gate 置零。第三项保留训练后的 W/LoRA，只在推理时切断外部 Z 输出，随后恢复 gate，不改 checkpoint。不是修改 prompt 位置。
 
-错配规则：按文档数分组，使用确定性的循环置换，要求每对 donor/recipient 文档 ID 完全不相交；不交换问题或答案，不随 batch size 改变 donor。无法组成对照就报错，可扩大样本量。`donors.json` 保存完整映射；文档不相交不保证语义或答案完全无关，解释时仍需注意。
+错配规则：按文档数分组，使用确定性的循环置换，要求每对 donor/recipient 文档 ID 完全不相交；不交换问题或答案，不随 batch size 改变 donor。单例在所有条件统一排除并记录ID；其余无法组成不相交置换的组报错（扩大样本量不保证解决）。`donors.json` 保存完整映射；文档不相交不保证语义或答案完全无关，解释时仍需注意。
 
 `summary.json` 给出各条件 QA/NLL、all/bridge/comparison 的配对 bootstrap，以及输出字符串改变率。差值方向为干预减正确：NLL 上升、QA 下降支持对应证据有用；变化很小提示当前路径作用弱；显著改善提示路径可能有害。CI 是给定 donor 置换与 checkpoint 的样本不确定性，不是训练 seed 方差。
 

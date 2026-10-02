@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Sampler
 
-from config import get_config
+from config import get_config, apply_arm
 from .cache import LatentCache
 from .data import QuROCollator, QuRODataset, move_to_device
 from .model import build_model
@@ -47,17 +47,35 @@ def environment():
 
 
 def load_runtime(args, teacher=False):
-    """Warm-start P1 weights only; never inherit its optimizer/scheduler."""
-    saved = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
-    if saved.get("reader_format"):
-        raise ValueError("--init_checkpoint must be the original P1, use --resume for continuation")
+    """Explicit release or P1 initialization; old checkpoints default to P1."""
+    source = getattr(args, "init_source", "p1")
+    if source == "published":
+        if args.init_checkpoint:
+            raise ValueError("published initialization forbids --init_checkpoint; no P1 weights/config")
+        if not args.generator_path:
+            raise ValueError("published initialization requires --generator_path to a pinned local release")
+        saved = None
+    else:
+        if not args.init_checkpoint:
+            raise ValueError("P1 initialization requires --init_checkpoint")
+        saved = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+        if saved.get("reader_format"):
+            raise ValueError("--init_checkpoint must be the original P1, use --resume for continuation")
     cfg = get_config(args.preset)
-    for section in ("readout", "query_encoder", "generator", "decoder", "data", "train"):
-        target = getattr(cfg, section)
-        known = {f.name for f in fields(target)}
-        for key, value in saved["config"][section].items():
-            if key in known:
-                setattr(target, key, value)
+    if saved is None:
+        apply_arm(cfg, "P")
+        cfg.decoder.input_mode = "D0"
+        cfg.readout.output_scale = 1.0
+        cfg.readout.output_scale_learnable = False
+        cfg.readout.adaptive_budget = False
+        cfg.data.prefer_teacher_output = False
+    else:
+        for section in ("readout", "query_encoder", "generator", "decoder", "data", "train"):
+            target = getattr(cfg, section)
+            known = {f.name for f in fields(target)}
+            for key, value in saved["config"][section].items():
+                if key in known:
+                    setattr(target, key, value)
     if cfg.generator.kind != "pisco" or cfg.readout.kind != "pisco_direct":
         raise ValueError("this protocol requires a PISCO direct-memory P1 checkpoint")
     if cfg.decoder.input_mode != "D0" or cfg.readout.output_scale != 1.0 or cfg.readout.output_scale_learnable:
@@ -82,19 +100,24 @@ def load_runtime(args, teacher=False):
         raise ValueError("expected PISCO cache: 128 source tokens, 8 slots/document")
     stack, base = build_model(cfg, cache_hidden=cache.metadata.hidden_size)
     current = dict(base.lm.named_parameters())
-    payload = saved.get("generator_trainable", {})
     trainable = {n for n, p in current.items() if p.requires_grad}
-    if not trainable or set(payload) != trainable or any("lora_" not in n for n in trainable):
+    payload = saved.get("generator_trainable", {}) if saved is not None else None
+    if not trainable or any("lora_" not in n for n in trainable):
         raise ValueError("P1 decoder payload must exactly cover the active trainable LoRA")
-    base.load(args.init_checkpoint)
-    for name, tensor in payload.items():
-        if not torch.equal(current[name].detach().cpu(), tensor.to(current[name].dtype)):
-            raise ValueError(f"P1 LoRA restoration failed: {name}")
+    if payload is not None:
+        if set(payload) != trainable:
+            raise ValueError("P1 decoder payload must exactly cover the active trainable LoRA")
+        base.load(args.init_checkpoint)
+        for name, tensor in payload.items():
+            if not torch.equal(current[name].detach().cpu(), tensor.to(current[name].dtype)):
+                raise ValueError(f"P1 LoRA restoration failed: {name}")
     spec = ReaderSpec(args.arm, tuple(int(x) for x in args.layers.split(",")),
                       args.state_weight, args.workspace_tokens, args.cross_dim,
                       args.cross_heads, args.gate_init)
     reader = ReaderExperiment(base, spec).to(args.device)
     reader.p1_prefer_teacher_output = p1_prefer_teacher_output
+    if getattr(args, "freeze_decoder", False):
+        reader.freeze_decoder()
     if teacher:
         reader.requires_grad_(False)
         reader.eval()
@@ -107,7 +130,10 @@ def load_runtime(args, teacher=False):
 
 def identity(args, cfg, cache, reader):
     builder = reader.builders["D0"]
-    return {"init_checkpoint_sha256": file_hash(args.init_checkpoint),
+    release = None
+    if getattr(args, "init_source", "p1") == "published":
+        release = release_identity(cfg.generator.name_or_path)
+    result = {"init_checkpoint_sha256": json_hash(release) if release else file_hash(args.init_checkpoint),
             "train_file_sha256": file_hash(cfg.data.train_file),
             "cache_manifest_sha256": file_hash(Path(cfg.data.cache_dir) / "manifest.json"),
             "cache_path": str(Path(cfg.data.cache_dir).resolve()),
@@ -118,12 +144,32 @@ def identity(args, cfg, cache, reader):
             "max_prompt_tokens": builder.max_prompt_tokens, "max_docs": cfg.data.max_docs,
             "max_answer_len": cfg.data.max_answer_len, "target_source": "gold",
             "layers": list(reader.spec.layers), "hidden": reader.hidden}
+    if release is not None:
+        result.update(init_source="published", published_files=release)
+    return result
+
+
+def release_identity(root):
+    """Fingerprint local release artifacts; does not certify upstream data hygiene.
+
+    Externally referenced backbone paths must also be pinned by the operator.
+    File hashes intentionally rechecked on a new process/evaluation invocation.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        raise ValueError("release must be a local snapshot directory")
+    files = sorted(p for p in root.rglob("*") if p.is_file()
+                   and p.suffix in {".json", ".safetensors", ".bin", ".py", ".model"}
+                   and not any(part.startswith(".") for part in p.relative_to(root).parts))
+    if not any(p.suffix in {".safetensors", ".bin"} for p in files):
+        raise ValueError("release directory contains no model weights")
+    return {str(p.relative_to(root)): file_hash(p) for p in files}
 
 
 def dataset(path, cfg, cache, reader, limit=None, corpus=None, target_policy="gold"):
-    if target_policy not in {"gold", "p1"}:
+    if target_policy not in {"gold", "p1", "teacher"}:
         raise ValueError("unknown target policy")
-    prefer_teacher = target_policy == "p1" and reader.p1_prefer_teacher_output
+    prefer_teacher = target_policy == "teacher" or (target_policy == "p1" and reader.p1_prefer_teacher_output)
     # Evaluation and teacher-state caching always retain the default gold policy.
     data_cfg = replace(cfg.data, prefer_teacher_output=prefer_teacher)
     ds = QuRODataset(path, reader.tok, data_cfg, limit=limit, corpus=corpus)
@@ -133,6 +179,10 @@ def dataset(path, cfg, cache, reader, limit=None, corpus=None, target_policy="go
     for row in ds.rows:
         if not row["answers"] or (not prefer_teacher and row["target_source"] != "gold"):
             raise ValueError("every row requires a gold answer")
+        if target_policy == "teacher" and row["target_source"] == "teacher":
+            tokens = reader.tok(" " + row["target"].strip(), add_special_tokens=False)["input_ids"]
+            if not tokens or len(tokens) > cfg.data.max_answer_len:
+                raise ValueError(f"teacher target would be empty or truncated for row {row['id']}")
         for doc in row["retrieved_doc_ids"]:
             if doc not in cache or (corpus is not None and doc not in corpus):
                 raise ValueError(f"missing document {doc} for row {row['id']}")
@@ -244,4 +294,9 @@ def save_checkpoint(path, reader, args, provenance, step, best, optimizer, sched
 def training_signature(args):
     # All choices affecting the trajectory must match on resume; output paths may move.
     excluded = {"command", "out_dir", "resume", "num_workers", "device"}
-    return json_hash({k: v for k, v in vars(args).items() if k not in excluded})
+    values = dict(vars(args))
+    values.setdefault("init_source", "p1")
+    values.setdefault("freeze_decoder", False)
+    values.setdefault("early_stop_patience", 0)
+    values.setdefault("target_manifest", None)
+    return json_hash({k: v for k, v in values.items() if k not in excluded})
