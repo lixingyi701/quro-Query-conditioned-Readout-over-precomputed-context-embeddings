@@ -29,6 +29,22 @@ from .distill import distillation_loss
 from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
                      PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
+from .projector import JointQueryProjector
+
+
+class FrozenWordEmbeddingQueryEncoder(nn.Module):
+    """Ordered native word embeddings; no new weights or LM forward."""
+
+    representation = "word_embedding"
+
+    def __init__(self, lm):
+        super().__init__()
+        self._lm = [lm]
+        self.out_dim = int(lm.config.hidden_size)
+
+    @torch.no_grad()
+    def forward(self, ids, mask=None):
+        return self._lm[0].get_input_embeddings()(ids).detach().float()
 
 
 class TokenEmbeddingQueryEncoder(nn.Module):
@@ -336,6 +352,18 @@ class QuROModel(nn.Module):
             self.readout = PiscoDirectReadout(self.cache_hidden, self.d_gen)
         elif r.kind == "similarity_topb":
             self.readout = SimilarityTopBReadout(self.cache_hidden, self.d_gen)
+        elif r.kind == "joint_projector":
+            cfg.revalidate()
+            if self.cache_hidden != self.d_gen:
+                raise ValueError("joint_projector requires native PISCO cache/decoder dimensions")
+            expected_budget = cfg.data.max_docs * self.n_mem_tokens
+            if r.max_budget != expected_budget or r.budget_buckets != [expected_budget]:
+                raise ValueError(f"joint_projector requires full K*m budget={expected_budget}")
+            if any(p.requires_grad for p in lm.parameters()):
+                raise ValueError("joint_projector requires every original model parameter frozen")
+            self.readout = JointQueryProjector(
+                self.d_gen, query_encoder.out_dim, cfg.data.max_docs, self.n_mem_tokens,
+                cfg.data.max_query_len, r.projector_hidden, r.projector_query_mode)
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
@@ -723,6 +751,11 @@ class QuROModel(nn.Module):
             "config": asdict(self.cfg),
             "step": step,
         }
+        if isinstance(self.readout, JointQueryProjector):
+            payload["projector_layout"] = {
+                name: getattr(self.readout, name) for name in (
+                    "max_documents", "memories_per_document", "max_query_tokens",
+                    "hidden_size", "query_dim")}
         # The frozen query adapter is not trainable, so the filter above drops it
         # -- and it cannot be reconstructed from the checkpoint path alone: with
         # generator_lora_init="random" the decoder adapter is reset *before* the
@@ -788,6 +821,23 @@ class QuROModel(nn.Module):
 
     def load(self, path, strict=False, optimizer=None, scheduler=None):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        if isinstance(self.readout, JointQueryProjector):
+            saved = ckpt.get("config", {})
+            if (saved.get("readout", {}).get("kind") != "joint_projector"
+                    or saved.get("readout", {}).get("projector_query_mode")
+                    != self.cfg.readout.projector_query_mode
+                    or saved.get("query_encoder", {}).get("kind") != self.cfg.query_encoder.kind):
+                raise ValueError("checkpoint does not match the joint projector/query configuration")
+            if ckpt.get("generator_trainable"):
+                raise ValueError("joint projector checkpoint must not overwrite frozen reader weights")
+            layout = {name: getattr(self.readout, name) for name in (
+                "max_documents", "memories_per_document", "max_query_tokens",
+                "hidden_size", "query_dim")}
+            if ckpt.get("projector_layout") != layout:
+                raise ValueError("joint projector checkpoint has a different memory/query layout")
+            expected = {f"readout.{name}" for name, _ in self.readout.named_parameters()}
+            if not expected.issubset(ckpt["state_dict"]):
+                raise ValueError("joint projector checkpoint is missing trained projection weights")
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)
@@ -812,12 +862,15 @@ def build_model(cfg, cache_hidden: Optional[int] = None):
 
 def build_query_encoder(cfg, stack):
     """Frozen token-level query encoder; its hidden states are the readout's Q side."""
+    if cfg.query_encoder.kind == "word_embedding":
+        return FrozenWordEmbeddingQueryEncoder(stack.lm)
     if cfg.query_encoder.kind == "generator":
         from .generator import detect_adapter_name
         return GeneratorQueryEncoder(
             stack.lm, cfg.query_encoder.pooling,
             representation=cfg.query_encoder.representation,
-            adapter_name=detect_adapter_name(stack.lm))
+            adapter_name=(detect_adapter_name(stack.lm)
+                          if getattr(stack.lm, "peft_config", None) else "decoder_adapter"))
     if cfg.query_encoder.kind == "hf":
         from .hf_encoder import HFTokenEncoder
         return HFTokenEncoder(cfg.query_encoder)

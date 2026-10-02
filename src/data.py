@@ -158,6 +158,8 @@ class QuRODataset(Dataset):
         target_ids = encode_text(self.tok, " " + row["target"].strip())[: self.cfg.max_answer_len]
         if self.eos is not None:
             target_ids.append(self.eos)
+        query_ids = encode_text(self.query_tok, readout_query)
+        query_gen_ids = encode_text(self.tok, readout_query)
         return {
             "id": row["id"],
             # "query" is what the decoder prompt renders; query_ids/query_gen_ids
@@ -169,8 +171,9 @@ class QuRODataset(Dataset):
             "retrieved_doc_ids": document_row["retrieved_doc_ids"],
             "document_texts": [self.corpus[d] for d in document_row["retrieved_doc_ids"]
                                if d in self.corpus],
-            "query_ids": encode_text(self.query_tok, readout_query)[: self.cfg.max_query_len],
-            "query_gen_ids": encode_text(self.tok, readout_query)[: self.cfg.max_query_len],
+            "query_ids": query_ids[: self.cfg.max_query_len],
+            "query_gen_ids": query_gen_ids[: self.cfg.max_query_len],
+            "query_truncated": len(query_ids) > self.cfg.max_query_len,
             "target_ids": target_ids,
             "budget": row.get("budget"),
             "raw": row,
@@ -220,6 +223,7 @@ class QuROCollator:
             "retrieved_doc_ids": doc_ids,
             "document_texts": [x["document_texts"][: self.max_docs] for x in batch],
             "query_ids": query_ids, "query_mask": query_mask,
+            "query_truncated": [x.get("query_truncated", False) for x in batch],
             "query_gen_ids": gen_ids, "query_gen_mask": gen_mask,
             "target_ids": [x["target_ids"] for x in batch],
             "cached_latents": latents, "document_mask": document_mask,

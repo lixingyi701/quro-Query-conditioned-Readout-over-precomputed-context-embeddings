@@ -121,6 +121,12 @@ go/no-go corpus takes about 75 minutes and 17 GB at fp16.
 
 ## Correctness checks
 
+The frozen published-PISCO joint projector is available through
+`--preset pisco_joint_projector`: all ten documents' memories and the ordered
+query word embeddings enter a two-layer residual MLP, preserving 80 memory slots.
+Only the projector trains. See [design and run commands](docs/JOINT_QUERY_PROJECTOR.md)
+for the contextual-query option, matched query-independent control and validation.
+
 ```bash
 python tests/test_shapes.py                  # 31 CPU contract tests, no downloads
 python scripts/check_pisco_equivalence.py    # QuRO degenerated to PISCO vs PISCO itself

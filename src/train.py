@@ -59,13 +59,17 @@ def cycle(loader):
         yield from loader
 
 
-def lr_lambda_factory(total, warmup_ratio):
+def lr_lambda_factory(total, warmup_ratio, kind="cosine"):
+    if kind not in {"cosine", "linear"}:
+        raise ValueError(f"unknown learning rate schedule: {kind}")
     warmup = max(1, int(total * warmup_ratio))
 
     def schedule(step):
         if step < warmup:
             return (step + 1) / warmup
         progress = (step - warmup) / max(1, total - warmup)
+        if kind == "linear":
+            return max(0.0, 1.0 - progress)
         return 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
     return schedule
 
@@ -103,7 +107,11 @@ def build_args():
     ap.add_argument("--device", default=None)
     ap.add_argument("--resume_from", default=None)
 
-    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb"], default=None)
+    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector"], default=None)
+    ap.add_argument("--projector_hidden", type=int, default=None)
+    ap.add_argument("--projector_query_mode", choices=["conditioned", "agnostic_matched"], default=None)
+    ap.add_argument("--query_encoder_kind", choices=["word_embedding", "generator"], default=None)
+    ap.add_argument("--max_query_len", type=int, default=None)
     ap.add_argument("--output_query_mode",
                     choices=["agnostic", "agnostic_matched", "add", "film", "concat", "xattn"],
                     default=None)
@@ -192,6 +200,7 @@ def apply_overrides(cfg, args):
         ("eval_max_samples", cfg.train), ("num_workers", cfg.train),
         ("d_readout", cfg.readout), ("cache_dir", cfg.data),
         ("train_file", cfg.data), ("max_docs", cfg.data),
+        ("projector_hidden", cfg.readout), ("max_query_len", cfg.data),
     ]
     for name, target in simple:
         value = getattr(args, name)
@@ -199,6 +208,10 @@ def apply_overrides(cfg, args):
             setattr(target, name, value)
     if args.readout:
         cfg.readout.kind = args.readout
+    if args.projector_query_mode:
+        cfg.readout.projector_query_mode = args.projector_query_mode
+    if args.query_encoder_kind:
+        cfg.query_encoder.kind = args.query_encoder_kind
     if args.output_query_mode:
         cfg.readout.output_query_mode = args.output_query_mode
     # Applied after --readout/--output_query_mode but before the individual knobs,
@@ -292,8 +305,10 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     model.eval()
     rows, attention, source_tokens, readout_tokens = [], [], 0, 0
     prompt_tokens = 0
+    truncated_queries = 0
     for batch in loader:
         batch = move_to_device(batch, device)
+        truncated_queries += sum(batch.get("query_truncated", []))
         predictions = model.generate_answer(batch, max_new_tokens=max_new_tokens, budget=budget)
         result = model.readout_cached(batch, budget=budget,
                                       return_attn=bool(dump_attn_path))
@@ -344,6 +359,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     aggregate["readout_tokens"] = readout_tokens
     aggregate["decoder_input_tokens"] = prompt_tokens
     aggregate["mean_decoder_input_tokens"] = prompt_tokens / max(1, len(rows))
+    aggregate["query_feature_truncation_fraction"] = truncated_queries / max(1, len(rows))
     # Generator-side effective compression: the only ratio that makes two systems
     # comparable, because it is measured where the cost is actually paid.
     aggregate["xi_eff"] = (source_tokens / readout_tokens) if readout_tokens else None
@@ -366,7 +382,14 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         # Not cosmetic: under shared_current the query representation drifts with
         # the decoder LoRA, so two runs differing only in this flag are not the
         # same system and must not be pooled.
-        "query_representation": cfg.query_encoder.representation,
+        "query_representation": getattr(model.query_encoder, "representation",
+                                        cfg.query_encoder.representation),
+        "query_encoder_kind": cfg.query_encoder.kind,
+        "projector_query_mode": (cfg.readout.projector_query_mode
+                                 if cfg.readout.kind == "joint_projector" else None),
+        "projector_hidden": (cfg.readout.projector_hidden
+                             if cfg.readout.kind == "joint_projector" else None),
+        "max_query_len": cfg.data.max_query_len,
         "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
         "kd_weight": args.kd_weight,
         "teacher_logits": args.teacher_logits,
@@ -422,6 +445,14 @@ def main():
 
     cache = LatentCache(cfg.data.cache_dir)
     cfg.readout.cache_hidden = cache.metadata.hidden_size
+    if cfg.readout.kind == "joint_projector":
+        if args.disable_generator_adapter or args.teacher_logits or args.kd_weight:
+            raise ValueError("joint_projector keeps published adapters active and uses gold CE only")
+        if args.eval_input_modes and args.eval_input_modes != "D0":
+            raise ValueError("joint_projector's first experiment uses D0 for every evaluation")
+        expected = cfg.data.max_docs * cache.metadata.latent_size
+        if cfg.readout.max_budget != expected or cfg.readout.budget_buckets != [expected]:
+            raise ValueError(f"use --budget {expected} --budget_buckets {expected} for this K*m cache")
     print(f"[cache] {cache.metadata.compressor}: {len(cache)} docs, "
           f"m={cache.metadata.latent_size}, h={cache.metadata.hidden_size}")
 
@@ -475,7 +506,8 @@ def main():
     optimizer = torch.optim.AdamW(groups, lr=cfg.train.lr,
                                   weight_decay=cfg.train.weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lr_lambda_factory(cfg.train.steps, cfg.train.warmup_ratio))
+        optimizer, lr_lambda_factory(cfg.train.steps, cfg.train.warmup_ratio,
+                                     cfg.train.lr_schedule))
     start_step = 0
     best = {"metric": float("-inf"), "step": None}
     if cfg.train.resume_from:
@@ -560,6 +592,27 @@ def main():
     started = time.time()
 
     with open(log_path, "a", encoding="utf-8") as log:
+        def validate(done):
+            nonlocal best
+            name, loader = validation
+            aggregate, _ = evaluate(model, loader, device,
+                                    cfg.train.gen_max_new_tokens, cfg.readout.max_budget)
+            model.train()
+            score = float(aggregate[cfg.train.select_metric])
+            record = {"step": done, "split": name, "val_budget": cfg.readout.max_budget,
+                      **{k: round(float(aggregate[k]), 4) for k in ("em", "substring", "f1")},
+                      "seconds": round(time.time() - started, 1)}
+            print(f"[val] {record}", flush=True)
+            log.write(json.dumps({"validation": record}) + "\n")
+            log.flush()
+            if score > best["metric"]:
+                best = {"metric": score, "step": done,
+                        "metrics": {k: float(aggregate[k]) for k in ("em", "substring", "f1")}}
+                model.save(os.path.join(cfg.train.out_dir, "checkpoint_best.pt"), step=done)
+
+        # The zero-initialised native reader is an eligible best checkpoint.
+        if validation is not None and cfg.readout.kind == "joint_projector" and start_step == 0:
+            validate(0)
         for step in range(start_step, cfg.train.steps):
             # Decays to zero so the trust region never constrains the final model.
             residual_weight = cfg.train.residual_weight * max(
@@ -577,7 +630,7 @@ def main():
                 (output["loss"] / cfg.train.grad_accum).backward()
                 for key in totals:
                     if key in output:
-                        totals[key] += float(output[key]) / cfg.train.grad_accum
+                        totals[key] += float(output[key].detach()) / cfg.train.grad_accum
             grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
             optimizer.step()
             scheduler.step()
@@ -595,27 +648,7 @@ def main():
             done = step + 1
             if validation is not None and (done % cfg.train.eval_every == 0
                                            or done == cfg.train.steps):
-                name, loader = validation
-                aggregate, _ = evaluate(model, loader, device,
-                                        cfg.train.gen_max_new_tokens,
-                                        cfg.readout.max_budget)
-                # evaluate() leaves the model in eval mode, which would silently
-                # disable LoRA dropout for the rest of training.
-                model.train()
-                score = float(aggregate[cfg.train.select_metric])
-                record = {"step": done, "split": name, "val_budget": cfg.readout.max_budget,
-                          **{k: round(float(aggregate[k]), 4)
-                             for k in ("em", "substring", "f1")},
-                          "seconds": round(time.time() - started, 1)}
-                print(f"[val] {record}", flush=True)
-                log.write(json.dumps({"validation": record}) + "\n")
-                log.flush()
-                if score > best["metric"]:
-                    best = {"metric": score, "step": done,
-                            "metrics": {k: float(aggregate[k])
-                                        for k in ("em", "substring", "f1")}}
-                    model.save(os.path.join(cfg.train.out_dir, "checkpoint_best.pt"),
-                               step=done)
+                validate(done)
 
     model.save(os.path.join(cfg.train.out_dir, "checkpoint_last.pt"),
                optimizer=optimizer, scheduler=scheduler, step=cfg.train.steps)

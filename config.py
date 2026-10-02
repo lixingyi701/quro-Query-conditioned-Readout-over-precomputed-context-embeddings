@@ -90,12 +90,20 @@ class ReadoutConfig:
     max_document_sources: int = 32
     max_latents_per_document: int = 64
 
+    # Full-budget joint MLP; d_readout/attention knobs do not apply to this kind.
+    projector_hidden: int = 128
+    projector_query_mode: str = "conditioned"  # or parameter-matched fixed query
+
     def __post_init__(self):
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
-        if self.kind not in {"quro", "pisco_direct", "similarity_topb"}:
+        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "joint_projector"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
+        if self.projector_hidden < 1:
+            raise ValueError("projector_hidden must be positive")
+        if self.projector_query_mode not in {"conditioned", "agnostic_matched"}:
+            raise ValueError(f"unknown projector_query_mode: {self.projector_query_mode}")
         if self.prior_mode not in {"rank", "shared"}:
             raise ValueError(f"unknown prior_mode: {self.prior_mode}")
         if self.output_mode not in {"full", "pool_only", "delta_only"}:
@@ -128,7 +136,7 @@ class QueryEncoderConfig:
     of a multi-hop question.
     """
 
-    kind: str = "generator"                     # "generator" | "hf" | "toy"
+    kind: str = "generator"                     # also "word_embedding" | "hf" | "toy"
     name_or_path: str = ""                      # blank -> paths.ENCODER_PATH
     d_model: int = 128                          # toy only
     # Sentence vector for the cosine prior.  "mean" is the measured winner, not
@@ -169,7 +177,7 @@ class QueryEncoderConfig:
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"])
 
     def __post_init__(self):
-        if self.kind not in {"generator", "hf", "toy"}:
+        if self.kind not in {"generator", "word_embedding", "hf", "toy"}:
             raise ValueError(f"unknown query encoder kind: {self.kind}")
         if self.pooling not in {"last", "mean", "weighted"}:
             raise ValueError(f"unknown query pooling: {self.pooling}")
@@ -282,6 +290,7 @@ class TrainConfig:
     decoder_lr: Optional[float] = None
     weight_decay: float = 0.01
     warmup_ratio: float = 0.05
+    lr_schedule: str = "cosine"                # projector preset uses linear
     grad_clip: float = 1.0
     log_every: int = 20
     # Validate during training instead of only scoring the final step.  Without
@@ -335,6 +344,23 @@ class Config:
     def revalidate(self):
         for section in (self.readout, self.query_encoder, self.generator, self.decoder):
             section.__post_init__()
+        if self.readout.kind == "joint_projector":
+            if not self.data.max_docs or self.data.max_docs < 1 or self.data.max_query_len < 1:
+                raise ValueError("joint_projector needs positive max_docs and max_query_len")
+            if self.generator.lora_init != "frozen":
+                raise ValueError("joint_projector trains only its projector; freeze the generator")
+            if (self.query_encoder.kind not in {"word_embedding", "generator"}
+                    or not self.query_encoder.freeze or self.query_encoder.lora):
+                raise ValueError("joint_projector needs frozen word embeddings or generator states")
+            if self.readout.adaptive_budget or self.train.budget_dropout:
+                raise ValueError("joint_projector preserves K*m: disable adaptive/budget dropout")
+            if (self.readout.cosine_prior or self.readout.output_mode != "full"
+                    or self.readout.out_proj_init not in {None, "zeros"}):
+                raise ValueError("joint_projector uses zero-initialised residual MLP without cosine prior")
+            if self.decoder.input_mode != "D0" or self.decoder.query_text_dropout:
+                raise ValueError("joint_projector uses the native D0 prompt without query dropout")
+            if self.data.prefer_teacher_output or self.train.residual_weight:
+                raise ValueError("joint_projector's first experiment uses gold answer CE only")
         return self
 
     def to_json(self, path: str):
@@ -343,6 +369,12 @@ class Config:
 
     def summary(self) -> str:
         r, g = self.readout, self.generator
+        if r.kind == "joint_projector":
+            return (f"[cfg] readout=joint_projector/{r.projector_query_mode} "
+                    f"hidden={r.projector_hidden} K={self.data.max_docs} "
+                    f"B={r.max_budget} query={self.query_encoder.kind} "
+                    f"T={self.data.max_query_len} | generator={g.kind}({g.lora_init}) | "
+                    f"decoder_input={self.decoder.input_mode}")
         return (f"[cfg] readout={r.kind}/{r.output_query_mode} d_r={r.d_readout} "
                 f"B={r.max_budget} buckets={r.budget_buckets} blocks={r.num_blocks} "
                 f"out={r.output_mode}/{r.out_proj_init or 'auto'} | "
@@ -401,6 +433,8 @@ def arm_label(cfg: Config) -> str:
         return "S"
     if r.kind == "pisco_direct":
         return "P"
+    if r.kind == "joint_projector":
+        return "JQ" if r.projector_query_mode == "conditioned" else "J0m"
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":
@@ -510,11 +544,35 @@ def pisco_hotpot_config() -> Config:
     return cfg
 
 
+def pisco_joint_projector_config() -> Config:
+    """Published frozen PISCO, K=10, m=8, ordered question words, 80 -> 80."""
+    cfg = pisco_hotpot_config()
+    cfg.readout.kind = "joint_projector"
+    cfg.readout.max_budget = 80
+    cfg.readout.budget_buckets = [80]
+    cfg.readout.cosine_prior = False
+    cfg.query_encoder.kind = "word_embedding"
+    cfg.generator.lora_init = "frozen"
+    cfg.data.max_query_len = 64
+    cfg.data.prefer_teacher_output = False
+    cfg.train.prefer_teacher_output = False
+    cfg.train.budget_dropout = False
+    cfg.train.residual_weight = 0.0
+    cfg.train.lr = 5e-5
+    cfg.train.lr_schedule = "linear"
+    cfg.train.batch_size = 2
+    cfg.train.grad_accum = 8
+    cfg.train.eval_every = 250
+    cfg.train.out_dir = os.path.join(paths.RUNS_DIR, "joint-projector")
+    return cfg.revalidate()
+
+
 PRESETS = {
     "toy": toy_config,
     "pisco_smoke": pisco_smoke_config,
     "pisco_gonogo": pisco_gonogo_config,
     "pisco_hotpot": pisco_hotpot_config,
+    "pisco_joint_projector": pisco_joint_projector_config,
 }
 
 
