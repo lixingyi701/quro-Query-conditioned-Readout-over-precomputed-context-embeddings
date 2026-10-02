@@ -4,7 +4,19 @@
 
 ## 1. 当前问题与边界
 
-依据用户提供的服务器摘要，尚未读取服务器原始日志：Direct-CE 在 dev 前 500 条上 substring 从 .640 到 .600，NLL 从 .604 到 .793；W 从 .278 到 .274；Direct-State 在约 2240 步时无改善。可以开始诊断，不必等待最后几百步。正在运行的任务可自然结束，不需要杀进程。完整最终数字另行记录。
+依据用户提供的服务器最终摘要，尚未读取服务器原始日志：三臂已结束。Direct-State EXIT 0，3000 步用时 2.7 小时、峰值显存 14.6 GB；best 仍是 step=0。以下均为 dev 前 500 条，不能与全量 2000 条的 .600 起点混用。
+
+| checkpoint | substring | EM | F1 | NLL | bridge substring | comparison substring |
+|---|---|---|---|---|---|---|
+| P₁ / Direct step=0 | .640 | .596 | .695 | .604 | .633 | .679 |
+| Direct-CE step=3000 | .600 | — | — | .793 | — | — |
+| Direct-State step=3000 | .598 | .546 | .665 | .779 | .597 | .603 |
+
+Direct-State 相对起点下降 4.2 pp substring、5.0 pp EM、3.0 pp F1，NLL 上升 .175；相对 Direct-CE 是 −0.2 pp substring（净少答对 1 题）、−.014 NLL。差异较小，但没有逐题配对结果就不宣布“统计上都在噪声范围内”；净差 1 题也不表示两模型只在 1 道题上不同。W 最终 substring .274，零步 .278。
+
+训练日志 state loss 从第 1 步 .074，经约 .11，最后 .083。这不是固定样本上的起点/终点比较，且第 1 步不是严格的 step-zero 状态评测，不能据此断言整个训练期间都没向教师靠拢。低训练 CE 与更高 dev NLL 支持泛化恶化，但不能单独分离重复数据、目标切换、学习率重启的贡献。
+
+两组共享的继续训练设置不是组间 state 对照的差异性混杂：本轮仍可回答“在该配置下，加 state 是否改善 QA”，目前未见增益。它不能回答所有目标、权重或训练配方下 state 是否有效，也不等于状态项完全没有影响。没有必要延长本轮训练等待翻盘。
 
 | 问题 | 目前支持 | 尚不支持 |
 |---|---|---|
@@ -35,12 +47,13 @@ mkdir -p "$REC/snapshots"
 
 原 best 选择结果仍是主记录。全量 last K=10/K=2 是补充分析，不用其结果反向修改 best 规则。可以复用原 runbook 第 7 节，仅将 checkpoint 换为 last、输出目录另取名。Direct 两个 step-zero best 若完全相同，可复用其评测。W best 是新接口零步，不等于 P₁。
 
-以下诊断使用快照，避免运行中的 `checkpoint_last.pt` 被后续保存替换。只复制一次；不要把同一快照路径覆盖为新 step。`last` 可能是最近保存步而非日志当前步，诊断 JSON 记录实际 step。
+以下诊断使用快照，保留对应权重。只复制一次；不要把同一快照路径覆盖为新 step。最终 state 使用新的 `state_last3000.pt` 名称，避免 `cp -n` 静默保留先前已复制的 `state_available.pt` 中途版本。诊断 JSON 中核对实际 step 为 0/3000/3000。
 
 ```bash
 cp -n "$OLD/w_ce_s42/checkpoint_last.pt" "$REC/snapshots/w_last.pt"
 cp -n "$OLD/direct_state_s42/checkpoint_best.pt" "$REC/snapshots/state_best.pt"
-cp -n "$OLD/direct_state_s42/checkpoint_last.pt" "$REC/snapshots/state_available.pt"
+cp -n "$OLD/direct_ce_s42/checkpoint_last.pt" "$REC/snapshots/ce_last3000.pt"
+cp -n "$OLD/direct_state_s42/checkpoint_last.pt" "$REC/snapshots/state_last3000.pt"
 ```
 
 此时 best 若仍是 step=0，便是 P₁ 的状态对照。若 best 已变，使用之前保留的 step-zero reader checkpoint，不要把原 P₁ checkpoint 直接传给诊断工具（格式不同）。
@@ -67,9 +80,10 @@ CUDA_VISIBLE_DEVICES=2 python scripts/diagnose_reader_experiment.py evidence \
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 python scripts/diagnose_reader_experiment.py state \
-  --checkpoints "$REC/snapshots/state_best.pt" "$REC/snapshots/state_available.pt" \
+  --checkpoints "$REC/snapshots/state_best.pt" \
+    "$REC/snapshots/ce_last3000.pt" "$REC/snapshots/state_last3000.pt" \
   --teacher_cache "$OLD/teacher_train" --limit 128 --batch_size 1 \
-  --grad_batches 8 --out_dir "$REC/state_fixed"
+  --grad_batches 8 --out_dir "$REC/state_fixed_final_threeway"
 ```
 
 每个 checkpoint 都用相同问题、同一教师状态、eval 模式关闭 dropout：
@@ -79,7 +93,9 @@ CUDA_VISIBLE_DEVICES=3 python scripts/diagnose_reader_experiment.py state \
 - 报告 `||g_CE||`、`||g_state||`、`lambda*||g_state||/||g_CE||` 及两梯度夹角余弦。负余弦表示当前固定 batch 上方向冲突；不是在所有训练样本上成立的结论。
 - 这里的梯度是 eval 模式下的确定性诊断，不等同于训练日志中的 dropout 梯度。Direct-CE checkpoint 若加入对照，其 state 梯度是反事实计算，不表示该组曾使用 state loss。
 
-先逐层/逐样本比较，不再把训练日志不同 batch 的 state loss 首尾当作对齐曲线。若状态距离确实下降但 QA 无益，优先质疑监督对象；若未下降，结合梯度比值与冲突判断优化问题。小比值支持“局部状态梯度弱”，仍不自动决定把 lambda 放大多少。
+必须同时比较 P₁、CE-last、State-last：State 未优于 P₁ 的距离，不代表它相对 CE 没有效果。例如固定样本上距离若是 .07/.12/.09（仅示例，不是实测），state 已减轻偏移，但没有恢复起点，更没有改善 QA。
+
+先逐层/逐样本比较，不再把训练日志不同 batch 的 state loss 首尾当作对齐曲线。若 State 比 CE 更接近教师但 QA 无益，说明存在对齐作用而没有任务收益，需质疑监督对象或收益被其他退化抵消；若 State 与 CE 距离也无改善，再结合梯度比值与冲突判断优化问题。小比值支持“局部状态梯度弱”，仍不自动决定把 lambda 放大多少。终点梯度只是终点局部信息，不能据此追溯整个训练期间的梯度竞争。
 
 如显存不足，维持 batch=1，先设 `--grad_batches 0` 做纯前向；梯度部分需要单独的空输出目录再运行。新脚本有实际 backward 诊断，但不进行任何 optimizer step。
 
