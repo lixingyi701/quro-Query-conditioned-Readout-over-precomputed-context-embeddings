@@ -384,13 +384,18 @@ def test_diagnostic_donors_and_gradient_statistics():
     spec.loader.exec_module(diag)
     rows = [{"id": str(i), "query": "q", "answers": ["a"], "retrieved_doc_ids": [str(i)]}
             for i in range(4)]
-    changed, mapping = diag.mismatch_rows(rows)
+    kept, changed, mapping, excluded = diag.mismatch_rows(rows)
+    assert kept == rows and excluded == []
     assert len({m["donor_id"] for m in mapping}) == 4
     for old, new in zip(rows, changed):
         assert old["id"] == new["id"] and old["answers"] == new["answers"]
         assert not set(old["retrieved_doc_ids"]) & set(new["retrieved_doc_ids"])
     with pytest.raises(ValueError):
         diag.mismatch_rows([rows[0], {**rows[1], "retrieved_doc_ids": ["0"]}])
+    # A singleton document count has no donor: excluded, not fatal.
+    lone = {"id": "lone", "query": "q", "answers": ["a"], "retrieved_doc_ids": ["x", "y"]}
+    kept, changed, mapping, excluded = diag.mismatch_rows(rows + [lone])
+    assert excluded == ["lone"] and kept == rows and len(changed) == len(mapping) == 4
     x = torch.tensor([1., 2.], requires_grad=True)
     g = diag.gradient_stats(x.sum(), -2 * x.sum(), [x], .1)
     assert g["gradient_cosine"] == pytest.approx(-1.)

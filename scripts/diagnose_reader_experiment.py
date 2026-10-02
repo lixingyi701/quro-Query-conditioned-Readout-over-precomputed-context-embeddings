@@ -41,12 +41,17 @@ def mismatch_rows(rows):
 
     Reject overlapping documents so a supposed mismatch cannot silently retain
     the recipient's evidence. Keep question, golds and all other labels unchanged.
+    A document count held by a single row has no possible donor; such rows are
+    returned as excluded and must be dropped from every condition.
     """
     buckets = defaultdict(list)
     for i, row in enumerate(rows):
         buckets[len(row["retrieved_doc_ids"])].append(i)
-    donors = {}
+    donors, excluded = {}, []
     for indices in buckets.values():
+        if len(indices) == 1:
+            excluded.append(rows[indices[0]]["id"])
+            continue
         for shift in range(1, len(indices)):
             pairs = list(zip(indices, indices[shift:] + indices[:shift]))
             if all(not set(rows[i]["retrieved_doc_ids"]) & set(rows[j]["retrieved_doc_ids"])
@@ -55,13 +60,16 @@ def mismatch_rows(rows):
                 break
         else:
             raise ValueError("cannot form disjoint equal-document-count donors; increase --limit")
-    result = deepcopy(rows)
-    for i, row in enumerate(result):
+    kept = sorted(donors)
+    if not kept:
+        raise ValueError("no row has an equal-document-count donor; increase --limit")
+    result = [deepcopy(rows[i]) for i in kept]
+    for row, i in zip(result, kept):
         row["retrieved_doc_ids"] = list(rows[donors[i]]["retrieved_doc_ids"])
-    mapping = [{"id": row["id"], "donor_id": rows[donors[i]]["id"],
-                "original_docs": row["retrieved_doc_ids"],
-                "donor_docs": result[i]["retrieved_doc_ids"]} for i, row in enumerate(rows)]
-    return result, mapping
+    mapping = [{"id": rows[i]["id"], "donor_id": rows[donors[i]]["id"],
+                "original_docs": rows[i]["retrieved_doc_ids"],
+                "donor_docs": row["retrieved_doc_ids"]} for row, i in zip(result, kept)]
+    return [rows[i] for i in kept], result, mapping, excluded
 
 
 @contextmanager
@@ -83,8 +91,8 @@ def disabled_cross(reader):
 def evidence(a, out):
     saved, original, cfg, cache, reader, current = load_checkpoint(a.checkpoint, a.device)
     ds = dataset(a.eval_file, cfg, cache, reader, a.limit)
-    changed, mapping = mismatch_rows(ds.rows)
-    atomic_json(out / "donors.json", mapping)
+    ds.rows, changed, mapping, excluded = mismatch_rows(ds.rows)
+    atomic_json(out / "donors.json", {"excluded_without_donor": excluded, "pairs": mapping})
     conditions = {}
     def run(name):
         summary, rows = evaluate(reader, loader(ds, cfg, cache, reader, a.batch_size),
@@ -119,6 +127,7 @@ def evidence(a, out):
         "checkpoint": str(Path(a.checkpoint).resolve()), "checkpoint_sha256": file_hash(a.checkpoint),
         "step": saved["step"], "arm": original.arm, "provenance": current,
         "eval_file_sha256": file_hash(a.eval_file), "args": vars(a), "environment": environment(),
+        "n_evaluated": len(ds.rows), "excluded_without_donor": excluded,
         "conditions": {k: v["summary"] for k, v in conditions.items()}, "contrasts": contrasts,
         "delta_direction": "intervention minus correct; positive NLL / negative QA indicates useful evidence",
         "scope": "exploratory; CI conditional on this fixed donor permutation, not training-seed uncertainty"})
