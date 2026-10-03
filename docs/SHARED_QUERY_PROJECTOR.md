@@ -4,6 +4,8 @@
 共用一套 MLP，先以 memory 查询逐 token 的 contextual question states，再生成
 本篇 m 个残差。原来的全局展平版保留为独立对照，不改变其配置或 checkpoint。
 
+首轮结果见 [SHARED_QUERY_PROJECTOR_RESULTS.md](SHARED_QUERY_PROJECTOR_RESULTS.md)。
+
 ## 判断与结构
 
 全局展平版的输出残差处于一个全局 r 维仿射子空间，且文档排名对应不同权重。
