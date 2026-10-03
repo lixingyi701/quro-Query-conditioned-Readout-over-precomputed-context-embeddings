@@ -30,6 +30,7 @@ from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
                      PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
 from .projector import JointQueryProjector, SharedDocumentProjector
+from .support import balanced_support_loss
 
 
 class FrozenWordEmbeddingQueryEncoder(nn.Module):
@@ -372,7 +373,7 @@ class QuROModel(nn.Module):
                 self.d_gen, query_encoder.out_dim, self.n_mem_tokens, r.projector_hidden,
                 r.projector_attention_dim, r.projector_heads, r.projector_conditioning,
                 r.projector_query_mode, r.projector_cross_document,
-                query_position=cfg.query_encoder.kind == "word_embedding")
+                query_position=cfg.query_encoder.kind == "word_embedding", support_head=r.support_head)
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
@@ -540,7 +541,8 @@ class QuROModel(nn.Module):
             self.cfg.query_encoder.pooling)
 
     # -- readout --------------------------------------------------------
-    def readout_cached(self, batch, budget=None, return_attn=False, output_mode=None):
+    def readout_cached(self, batch, budget=None, return_attn=False, output_mode=None,
+                       return_support=False):
         """``output_mode`` overrides the readout's output branch for this call only.
 
         Probing one trained checkpoint under full / pool_only / delta_only measures
@@ -570,6 +572,8 @@ class QuROModel(nn.Module):
         # baseline scores with it directly, and the trained readout uses it as the
         # cosine prior its attention starts from.
         kwargs = {}
+        if isinstance(self.readout, SharedDocumentProjector):
+            kwargs["return_support"] = return_support
         if isinstance(self.readout, SimilarityTopBReadout) or self.uses_cosine_prior:
             kwargs["query_vector"] = self.query_vector(batch)
         if output_mode is not None:
@@ -635,7 +639,8 @@ class QuROModel(nn.Module):
         return rows, cols, order
 
     def qa_loss(self, batch, budget=None, return_attn=False, return_logits=False):
-        result = self.readout_cached(batch, budget=budget, return_attn=return_attn)
+        result = self.readout_cached(batch, budget=budget, return_attn=return_attn,
+                                     return_support=self.cfg.train.support_loss_weight > 0)
         prompts = self.build_prompts(batch, result["soft_token_mask"], training=self.training)
         packed = assemble_inputs(
             self.lm.get_input_embeddings(), prompts,
@@ -699,12 +704,21 @@ class QuROModel(nn.Module):
             tail[keep], temperature=teacher.temperature)
 
     def forward(self, batch, budget=None, residual_weight: float = 0.0,
-                teacher=None, kd_weight: float = 0.0):
+                teacher=None, kd_weight: float = 0.0, support_weight=None):
         want_logits = teacher is not None and kd_weight > 0
         qa, result = self.qa_loss(batch, budget=budget, return_logits=want_logits)
         total = self.cfg.train.beta_qa * qa
         output = {"qa_loss": qa.detach(),
                   "mean_budget": result["budgets"].float().mean().detach()}
+        if self.cfg.train.support_loss_weight > 0:
+            if "support_labels" not in batch or "support_loss_mask" not in batch:
+                raise ValueError("support supervision requires collated support targets")
+            support, examples = balanced_support_loss(
+                result["aux"]["support_logits"], batch["support_labels"], batch["support_loss_mask"])
+            weight = self.cfg.train.support_loss_weight if support_weight is None else support_weight
+            total = total + weight * support
+            output.update(support_loss=support.detach(), support_examples=examples.detach(),
+                          support_weight=torch.as_tensor(weight, device=qa.device))
         if want_logits:
             # The gold CE stays: the teacher is wrong on plenty of questions, and
             # replacing the labels with it would cap the student at the teacher's
@@ -838,9 +852,13 @@ class QuROModel(nn.Module):
                   else ("memories_per_document", "hidden_size", "query_dim", "hidden_dim",
                         "attention_dim", "num_heads", "conditioning", "cross_document",
                         "query_position"))
-        return {name: getattr(self.readout, name) for name in fields}
+        layout = {name: getattr(self.readout, name) for name in fields}
+        if isinstance(self.readout, SharedDocumentProjector):
+            layout["support_head"] = self.readout.support_classifier is not None
+        return layout
 
-    def load(self, path, strict=False, optimizer=None, scheduler=None):
+    def load(self, path, strict=False, optimizer=None, scheduler=None,
+             allow_new_support_head=False):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             saved = ckpt.get("config", {})
@@ -852,9 +870,21 @@ class QuROModel(nn.Module):
             if ckpt.get("generator_trainable"):
                 raise ValueError("projector checkpoint must not overwrite frozen reader weights")
             layout = self._projector_layout()
-            if ckpt.get("projector_layout") != layout:
+            saved_layout = dict(ckpt.get("projector_layout", {}))
+            new_head = False
+            if isinstance(self.readout, SharedDocumentProjector):
+                saved_layout.setdefault("support_head", False)
+                new_head = (allow_new_support_head and layout["support_head"]
+                            and not saved_layout["support_head"])
+                if new_head:
+                    if optimizer is not None or scheduler is not None:
+                        raise ValueError("new support head requires weights-only warm start")
+                    saved_layout["support_head"] = True
+            if saved_layout != layout:
                 raise ValueError("projector checkpoint has a different memory/query layout")
             expected = {f"readout.{name}" for name, _ in self.readout.named_parameters()}
+            if new_head:
+                expected -= {"readout.support_classifier.weight", "readout.support_classifier.bias"}
             if not expected.issubset(ckpt["state_dict"]):
                 raise ValueError("projector checkpoint is missing trained projection weights")
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)

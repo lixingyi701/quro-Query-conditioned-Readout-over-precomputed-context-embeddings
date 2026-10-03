@@ -23,6 +23,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .cache import LatentCache
+from .support import manifest_digest, support_targets
 
 
 def doc_id_for(text: str) -> str:
@@ -197,7 +198,8 @@ class QuROCollator:
     """Resolve document IDs through the latent cache and pad the query tensors."""
 
     def __init__(self, cache: LatentCache, pad_id: int, query_pad_id: Optional[int] = None,
-                 max_docs: Optional[int] = None, require_budget_labels: bool = False):
+                 max_docs: Optional[int] = None, require_budget_labels: bool = False,
+                 support_policy=None):
         if cache is None:
             raise ValueError("QuRO is cache-first: a LatentCache is required")
         self.cache = cache
@@ -205,6 +207,8 @@ class QuROCollator:
         self.query_pad_id = pad_id if query_pad_id is None else query_pad_id
         self.max_docs = max_docs
         self.require_budget_labels = bool(require_budget_labels)
+        self.support_policy = support_policy
+        self.support_digest = manifest_digest(cache.manifest) if support_policy else None
 
     def __call__(self, batch):
         query_ids, query_mask = _pad_2d([x["query_ids"] for x in batch], self.query_pad_id)
@@ -230,6 +234,27 @@ class QuROCollator:
             "source_token_counts": counts,
             "raw": [x["raw"] for x in batch],
         }
+        if self.support_policy:
+            labels = torch.zeros_like(document_mask, dtype=torch.float)
+            label_mask = torch.zeros_like(document_mask)
+            loss_mask = torch.zeros_like(document_mask)
+            visibility = []
+            for i, item in enumerate(batch):
+                ids = doc_ids[i]
+                aligned = ids == item["raw"]["retrieved_doc_ids"][:len(ids)]
+                if aligned:
+                    ys, lm, sm, vs = support_targets(item["raw"], ids, self.support_digest,
+                                                    self.support_policy)
+                    labels[i, :len(ids)] = torch.tensor(ys)
+                    label_mask[i, :len(ids)] = torch.tensor(lm)
+                    # Never train against a different question's support labels.
+                    if item.get("readout_query", item["query"]) == item["raw"]["query"]:
+                        loss_mask[i, :len(ids)] = torch.tensor(sm)
+                else:
+                    vs = [None]*len(ids)
+                visibility.append(vs)
+            out.update(support_labels=labels, support_label_mask=label_mask & document_mask,
+                       support_loss_mask=loss_mask & document_mask, support_visible=visibility)
         budgets = [x.get("budget") for x in batch]
         if any(v is not None for v in budgets) and not all(v is not None for v in budgets):
             raise ValueError("budget labels must be present for every row in a batch or none")

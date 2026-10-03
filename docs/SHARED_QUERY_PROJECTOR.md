@@ -5,6 +5,8 @@
 本篇 m 个残差。原来的全局展平版保留为独立对照，不改变其配置或 checkpoint。
 
 首轮结果见 [SHARED_QUERY_PROJECTOR_RESULTS.md](SHARED_QUERY_PROJECTOR_RESULTS.md)。
+支持文档辅助监督的最小扩展、可见性注释和继续训练对照见
+[SUPPORT_DOCUMENT_SUPERVISION.md](SUPPORT_DOCUMENT_SUPERVISION.md)。
 
 ## 判断与结构
 

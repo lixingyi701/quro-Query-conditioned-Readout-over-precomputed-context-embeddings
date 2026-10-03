@@ -97,6 +97,7 @@ class ReadoutConfig:
     projector_attention_dim: int = 256
     projector_heads: int = 8
     projector_cross_document: bool = False
+    support_head: bool = False                 # training-only document classifier
 
     def __post_init__(self):
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
@@ -338,6 +339,9 @@ class TrainConfig:
     eval_batch_size: int = 16
     gen_max_new_tokens: int = 32
     prefer_teacher_output: bool = True
+    support_loss_weight: float = 0.0
+    support_warmup_steps: int = 100
+    support_visibility_policy: str = "visible"  # or explicit original-label control
 
 
 @dataclass
@@ -352,6 +356,15 @@ class Config:
     def revalidate(self):
         for section in (self.readout, self.query_encoder, self.generator, self.decoder):
             section.__post_init__()
+        if (not 0 <= self.train.support_loss_weight < float("inf")
+                or self.train.support_warmup_steps < 0):
+            raise ValueError("support loss needs a finite nonnegative weight and warmup")
+        if self.train.support_visibility_policy not in {"visible", "original"}:
+            raise ValueError("unknown support visibility policy")
+        if self.readout.support_head and self.readout.kind != "shared_projector":
+            raise ValueError("support head requires shared_projector")
+        if self.train.support_loss_weight and not self.readout.support_head:
+            raise ValueError("support loss requires an enabled support head")
         if self.readout.kind in {"joint_projector", "shared_projector"}:
             if ((self.data.max_docs is not None and self.data.max_docs < 1)
                     or (self.readout.kind == "joint_projector" and self.data.max_docs is None)
@@ -370,7 +383,7 @@ class Config:
             if self.decoder.input_mode != "D0" or self.decoder.query_text_dropout:
                 raise ValueError("projectors use the native D0 prompt without query dropout")
             if self.data.prefer_teacher_output or self.train.residual_weight:
-                raise ValueError("projector experiments use gold answer CE only")
+                raise ValueError("projector experiments use gold answers without residual penalties")
             if (self.readout.kind == "shared_projector"
                     and self.readout.projector_conditioning == "last"
                     and self.query_encoder.kind != "generator"):
@@ -393,6 +406,7 @@ class Config:
                     f"{r.projector_conditioning} hidden={r.projector_hidden} "
                     f"attn={r.projector_attention_dim}/{r.projector_heads} "
                     f"cross_document={r.projector_cross_document} K_cap={self.data.max_docs} "
+                    f"support_head={r.support_head} support_weight={self.train.support_loss_weight} "
                     f"B=all_cached query={self.query_encoder.kind} "
                     f"query_cap={self.data.max_query_len} | generator={g.kind}({g.lora_init})")
         if r.kind == "joint_projector":
@@ -464,7 +478,8 @@ def arm_label(cfg: Config) -> str:
     if r.kind == "shared_projector":
         label = ("S0m" if r.projector_query_mode == "agnostic_matched"
                  else "SL" if r.projector_conditioning == "last" else "SQ")
-        return label + ("X" if r.projector_cross_document else "")
+        return (label + ("X" if r.projector_cross_document else "")
+                + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else ""))
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":

@@ -39,6 +39,7 @@ from src.cache import LatentCache
 from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
 from src.distill import TeacherCache
 from src.model import build_model
+from src.support import support_targets, support_scores
 
 
 def set_seed(seed):
@@ -114,6 +115,11 @@ def build_args():
     ap.add_argument("--projector_attention_dim", type=int, default=None)
     ap.add_argument("--projector_heads", type=int, default=None)
     ap.add_argument("--projector_cross_document", action="store_true")
+    ap.add_argument("--support_head", action="store_true",
+                    help="attach the same small head in both continuation arms")
+    ap.add_argument("--support_loss_weight", type=float, default=None)
+    ap.add_argument("--support_warmup_steps", type=int, default=None)
+    ap.add_argument("--support_visibility_policy", choices=["visible", "original"], default=None)
     ap.add_argument("--query_encoder_kind", choices=["word_embedding", "generator"], default=None)
     ap.add_argument("--max_query_len", type=int, default=None)
     ap.add_argument("--output_query_mode",
@@ -206,6 +212,8 @@ def apply_overrides(cfg, args):
         ("train_file", cfg.data), ("max_docs", cfg.data),
         ("projector_hidden", cfg.readout), ("max_query_len", cfg.data),
         ("projector_attention_dim", cfg.readout), ("projector_heads", cfg.readout),
+        ("support_loss_weight", cfg.train), ("support_warmup_steps", cfg.train),
+        ("support_visibility_policy", cfg.train),
     ]
     for name, target in simple:
         value = getattr(args, name)
@@ -219,6 +227,8 @@ def apply_overrides(cfg, args):
         cfg.readout.projector_conditioning = args.projector_conditioning
     if args.projector_cross_document:
         cfg.readout.projector_cross_document = True
+    if args.support_head or cfg.train.support_loss_weight > 0:
+        cfg.readout.support_head = True
     if args.query_encoder_kind:
         cfg.query_encoder.kind = args.query_encoder_kind
     if args.output_query_mode:
@@ -320,7 +330,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
         truncated_queries += sum(batch.get("query_truncated", []))
         predictions = model.generate_answer(batch, max_new_tokens=max_new_tokens, budget=budget)
         result = model.readout_cached(batch, budget=budget,
-                                      return_attn=bool(dump_attn_path))
+                                      return_attn=bool(dump_attn_path), return_support=True)
         # Count the slots the prompt really carries: AG has none and RG none
         # either, so xi_eff stays meaningful across every row of the table.
         # What the decoder actually prefills, counted through the same code path
@@ -342,6 +352,17 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
             golds = item.get("answers") or [item["answer"]]
             row = {"id": item["id"], "query": item["query"], "golds": golds,
                    "pred": prediction, **metrics.score(prediction, golds)}
+            logits = result["aux"].get("support_logits")
+            if logits is not None and "support_labels" in batch:
+                n = len(batch["retrieved_doc_ids"][i])
+                scores = logits[i, :n].float().cpu().tolist()
+                ys = batch["support_labels"][i, :n].long().cpu().tolist()
+                mask = batch["support_label_mask"][i, :n].cpu().tolist()
+                sm = batch["support_loss_mask"][i, :n].cpu().tolist()
+                visible = batch["support_visible"][i]
+                row["support"] = {"logits": scores, "labels": ys, "label_mask": mask,
+                                  "loss_mask": sm, "visible": visible,
+                                  "metrics": support_scores(scores, ys, mask)}
             # Under a mismatch control the two routes carry different questions, so
             # record both rather than only the row's original one.
             if i < len(decoder_queries) and decoder_queries[i] != item["query"]:
@@ -369,6 +390,24 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     aggregate["decoder_input_tokens"] = prompt_tokens
     aggregate["mean_decoder_input_tokens"] = prompt_tokens / max(1, len(rows))
     aggregate["query_feature_truncation_fraction"] = truncated_queries / max(1, len(rows))
+    supported_rows = [r for r in rows if r.get("support", {}).get("metrics") is not None]
+    supported = [r["support"] for r in supported_rows]
+    if model.cfg.readout.support_head:
+        aggregate["support_questions"] = len(supported)
+    if supported:
+        for key in ("recall_at_2", "both_at_2", "exact_at_gold_k"):
+            values = [s["metrics"][key] for s in supported if s["metrics"][key] is not None]
+            aggregate["support_"+key] = sum(values)/len(values) if values else None
+        visible_questions = [s for s in supported if all(v is True for y, v in
+                             zip(s["labels"], s["visible"]) if y)]
+        aggregate["support_all_visible_questions"] = len(visible_questions)
+        aggregate["support_recall_at_2_all_visible"] = (
+            sum(s["metrics"]["recall_at_2"] for s in visible_questions)/len(visible_questions)
+            if visible_questions else None)
+        visible_rows = [r for r in supported_rows if all(v is True for y, v in
+                        zip(r["support"]["labels"], r["support"]["visible"]) if y)]
+        aggregate["support_all_visible_qa_f1"] = (
+            sum(r["f1"] for r in visible_rows)/len(visible_rows) if visible_rows else None)
     # Generator-side effective compression: the only ratio that makes two systems
     # comparable, because it is measured where the cost is actually paid.
     aggregate["xi_eff"] = (source_tokens / readout_tokens) if readout_tokens else None
@@ -409,6 +448,10 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                                      if cfg.readout.kind == "shared_projector" else None),
         "projector_heads": (cfg.readout.projector_heads
                              if cfg.readout.kind == "shared_projector" else None),
+        "support_head": cfg.readout.support_head,
+        "support_loss_weight": cfg.train.support_loss_weight,
+        "support_warmup_steps": cfg.train.support_warmup_steps,
+        "support_visibility_policy": cfg.train.support_visibility_policy,
         "budget_policy": "all_cached" if cfg.readout.kind == "shared_projector" else "configured",
         "max_query_len": cfg.data.max_query_len,
         "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
@@ -469,7 +512,7 @@ def main():
     cfg.readout.cache_hidden = cache.metadata.hidden_size
     if cfg.readout.kind in {"joint_projector", "shared_projector"}:
         if args.disable_generator_adapter or args.teacher_logits or args.kd_weight:
-            raise ValueError("projectors keep published adapters active and use gold CE only")
+            raise ValueError("projectors keep published adapters active and use gold answers without KD")
         if args.eval_input_modes and args.eval_input_modes != "D0":
             raise ValueError("projector experiments use D0 for every evaluation")
         if cfg.readout.kind == "joint_projector":
@@ -501,11 +544,25 @@ def main():
         cache, pad_id=model.pad_id,
         query_pad_id=getattr(stack.query_tokenizer, "pad_token_id", model.pad_id),
         max_docs=cfg.data.max_docs,
-        require_budget_labels=cfg.readout.adaptive_budget and not args.eval_only)
+        require_budget_labels=cfg.readout.adaptive_budget and not args.eval_only,
+        support_policy=cfg.train.support_visibility_policy if cfg.readout.support_head else None)
     train_set, train_loader, eval_loaders = build_loaders(
         cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
         args.doc_control, corpus)
     print(f"[data] train={len(train_set)} device={device}")
+    if cfg.train.support_loss_weight and not args.eval_only:
+        active, labelled = 0, 0
+        for row in train_set.rows:
+            ys, lm, sm, _ = support_targets(row, row["retrieved_doc_ids"],
+                                            collator.support_digest,
+                                            cfg.train.support_visibility_policy, require=True)
+            labelled += int(any(lm))
+            active += int(any(y and keep for y, keep in zip(ys, sm))
+                          and any(not y and keep for y, keep in zip(ys, sm)))
+        if not active:
+            raise ValueError("no training questions have usable positive AND negative support labels")
+        print(f"[support] labelled={labelled}/{len(train_set)} active={active}/{len(train_set)} "
+              f"policy={cfg.train.support_visibility_policy}")
 
     if args.eval_only:
         if cfg.train.resume_from:
@@ -545,7 +602,7 @@ def main():
         # new run from trained weights must NOT restore them, or the freshly
         # requested learning rates are silently overwritten by the saved ones.
         if args.warm_start:
-            model.load(cfg.train.resume_from)
+            model.load(cfg.train.resume_from, allow_new_support_head=True)
             print(f"[init] warm start from {cfg.train.resume_from}: weights only, "
                   f"fresh optimiser and schedule")
         else:
@@ -632,6 +689,7 @@ def main():
             record = {"step": done, "split": name, "val_budget": "full" if full_budget else validation_budget,
                       **{k: round(float(aggregate[k]), 4) for k in ("em", "substring", "f1")},
                       "seconds": round(time.time() - started, 1)}
+            record.update({k: v for k, v in aggregate.items() if k.startswith("support_")})
             print(f"[val] {record}", flush=True)
             log.write(json.dumps({"validation": record}) + "\n")
             log.flush()
@@ -654,10 +712,15 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             totals = {"loss": 0.0, "qa_loss": 0.0, "mean_budget": 0.0,
                       "residual_penalty": 0.0, "kd_loss": 0.0}
+            if cfg.train.support_loss_weight:
+                totals.update(support_loss=0.0, support_examples=0.0, support_weight=0.0)
+            support_weight = cfg.train.support_loss_weight * min(
+                1.0, (step+1)/max(1, cfg.train.support_warmup_steps))
             for _ in range(max(1, cfg.train.grad_accum)):
                 batch = move_to_device(next(iterator), device)
                 output = model(batch, budget=budget, residual_weight=residual_weight,
-                               teacher=teacher, kd_weight=args.kd_weight)
+                               teacher=teacher, kd_weight=args.kd_weight,
+                               support_weight=support_weight)
                 (output["loss"] / cfg.train.grad_accum).backward()
                 for key in totals:
                     if key in output:
@@ -673,6 +736,13 @@ def main():
                           "grad_norm": round(float(grad_norm), 3),
                           "lr": scheduler.get_last_lr()[0],
                           "seconds": round(time.time() - started, 1)}
+                if cfg.readout.support_head:
+                    modules = {"support_head_grad_norm": model.readout.support_classifier,
+                               "query_condition_grad_norm": model.readout.context_proj}
+                    for key, module in modules.items():
+                        gradients = [p.grad.detach() for p in module.parameters() if p.grad is not None]
+                        record[key] = (round(float(torch.stack([g.float().norm() for g in gradients]).norm()), 6)
+                                       if gradients else None)
                 print(record, flush=True)
                 log.write(json.dumps(record) + "\n")
                 log.flush()

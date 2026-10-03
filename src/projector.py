@@ -108,7 +108,8 @@ class SharedDocumentProjector(nn.Module):
 
     def __init__(self, hidden_size, query_dim, memories_per_document, hidden_dim=512,
                  attention_dim=256, num_heads=8, conditioning="cross_attention",
-                 query_mode="conditioned", cross_document=False, query_position=False):
+                 query_mode="conditioned", cross_document=False, query_position=False,
+                 support_head=False):
         super().__init__()
         if min(hidden_size, query_dim, memories_per_document, hidden_dim,
                attention_dim, num_heads) < 1:
@@ -146,6 +147,9 @@ class SharedDocumentProjector(nn.Module):
                                    if cross_document else None)
         fixed = torch.randn(1, 4, query_dim, generator=torch.Generator().manual_seed(0))
         self.register_buffer("fixed_query", fixed if not self.needs_query else None)
+        # Created after all existing weights: enabling this head preserves their init.
+        self.support_norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.support_classifier = nn.Linear(hidden_dim, 1) if support_head else None
 
     @staticmethod
     def positional_features(mask, width, dtype):
@@ -160,7 +164,7 @@ class SharedDocumentProjector(nn.Module):
         return pe
 
     def forward(self, doc_latents, document_mask, query_emb=None, query_mask=None,
-                budget=None, return_attn=False):
+                budget=None, return_attn=False, return_support=False):
         if budget is not None:
             raise ValueError("shared_projector always preserves all memories; leave budget unset")
         if doc_latents.ndim != 4:
@@ -226,11 +230,15 @@ class SharedDocumentProjector(nn.Module):
                                                need_weights=False)
             u = u + mixed
         delta = self.out_proj(u).reshape(b, k, m, h)
+        support_logits = None
+        if return_support and self.support_classifier is not None:
+            support_logits = self.support_classifier(self.support_norm(u)).squeeze(-1)
+            support_logits = torch.where(dm, support_logits, 0.0)
         delta = torch.where(dm[:, :, None, None], delta, 0.0)
         token_mask = dm[:, :, None].expand(b, k, m).reshape(b, k*m)
         denom = token_mask.sum().clamp_min(1) * h
         return (memory + delta).reshape(b, k*m, h), {
-            "attention": None, "query_attention": attention,
+            "attention": None, "query_attention": attention, "support_logits": support_logits,
             "token_mask": token_mask, "latent_mask": token_mask,
             "output_mode": "full", "delta_ms": delta.square().sum() / denom,
             "pooled_ms": memory.square().sum() / denom}

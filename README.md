@@ -26,6 +26,10 @@ document lengths. That is the whole basis of the efficiency argument.
 **Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — current state, standing
 constraints, ready-made caches, and the next experiments in priority order.
 
+The shared-projector support-document supervision implementation and matched
+continuation commands are in
+[`docs/SUPPORT_DOCUMENT_SUPERVISION.md`](docs/SUPPORT_DOCUMENT_SUPERVISION.md).
+
 [`docs/`](docs/) holds our own design notes, plans and results;
 [`article/`](article/) holds reading notes on other people's papers;
 [`results/`](results/) holds the raw numbers behind every claim.
