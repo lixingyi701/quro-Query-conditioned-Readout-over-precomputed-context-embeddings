@@ -29,7 +29,7 @@ from .distill import distillation_loss
 from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
                      PiscoPromptBuilder, assemble_inputs)
 from .readout import QuroReadout
-from .projector import JointQueryProjector
+from .projector import JointQueryProjector, SharedDocumentProjector
 
 
 class FrozenWordEmbeddingQueryEncoder(nn.Module):
@@ -364,6 +364,15 @@ class QuROModel(nn.Module):
             self.readout = JointQueryProjector(
                 self.d_gen, query_encoder.out_dim, cfg.data.max_docs, self.n_mem_tokens,
                 cfg.data.max_query_len, r.projector_hidden, r.projector_query_mode)
+        elif r.kind == "shared_projector":
+            cfg.revalidate()
+            if self.cache_hidden != self.d_gen or any(p.requires_grad for p in lm.parameters()):
+                raise ValueError("shared_projector requires native cache dimensions and fully frozen reader")
+            self.readout = SharedDocumentProjector(
+                self.d_gen, query_encoder.out_dim, self.n_mem_tokens, r.projector_hidden,
+                r.projector_attention_dim, r.projector_heads, r.projector_conditioning,
+                r.projector_query_mode, r.projector_cross_document,
+                query_position=cfg.query_encoder.kind == "word_embedding")
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
@@ -548,8 +557,14 @@ class QuROModel(nn.Module):
             self.query_encoder.last_pooled = None
         query_emb = (self.encode_query(batch["query_ids"], batch["query_mask"])
                      if needs_query else None)
-        budgets, budget_logits = self._resolve_budgets(
-            query_emb, batch.get("query_mask"), budget, latents.size(0), device)
+        if isinstance(self.readout, SharedDocumentProjector):
+            if budget is not None:
+                raise ValueError("shared_projector uses all cached memories, without an explicit budget")
+            budgets = document_mask.long().sum(1) * latents.size(2)
+            budget_logits = None
+        else:
+            budgets, budget_logits = self._resolve_budgets(
+                query_emb, batch.get("query_mask"), budget, latents.size(0), device)
 
         # One generator-space query vector serves two arms: the non-parametric
         # baseline scores with it directly, and the trained readout uses it as the
@@ -565,7 +580,8 @@ class QuROModel(nn.Module):
             kwargs["output_mode"] = output_mode
         soft_tokens, aux = self.readout(
             latents, document_mask, query_emb, batch.get("query_mask"),
-            budget=int(budgets.max().item()), return_attn=return_attn, **kwargs)
+            budget=(None if isinstance(self.readout, SharedDocumentProjector)
+                    else int(budgets.max().item())), return_attn=return_attn, **kwargs)
 
         token_mask = aux.get("token_mask")
         if token_mask is None:
@@ -751,11 +767,8 @@ class QuROModel(nn.Module):
             "config": asdict(self.cfg),
             "step": step,
         }
-        if isinstance(self.readout, JointQueryProjector):
-            payload["projector_layout"] = {
-                name: getattr(self.readout, name) for name in (
-                    "max_documents", "memories_per_document", "max_query_tokens",
-                    "hidden_size", "query_dim")}
+        if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
+            payload["projector_layout"] = self._projector_layout()
         # The frozen query adapter is not trainable, so the filter above drops it
         # -- and it cannot be reconstructed from the checkpoint path alone: with
         # generator_lora_init="random" the decoder adapter is reset *before* the
@@ -819,25 +832,31 @@ class QuROModel(nn.Module):
                 "does not match the one that was trained against")
         self.query_encoder.query_adapter_hash = digest
 
+    def _projector_layout(self):
+        fields = (("max_documents", "memories_per_document", "max_query_tokens",
+                   "hidden_size", "query_dim") if isinstance(self.readout, JointQueryProjector)
+                  else ("memories_per_document", "hidden_size", "query_dim", "hidden_dim",
+                        "attention_dim", "num_heads", "conditioning", "cross_document",
+                        "query_position"))
+        return {name: getattr(self.readout, name) for name in fields}
+
     def load(self, path, strict=False, optimizer=None, scheduler=None):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        if isinstance(self.readout, JointQueryProjector):
+        if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             saved = ckpt.get("config", {})
-            if (saved.get("readout", {}).get("kind") != "joint_projector"
+            if (saved.get("readout", {}).get("kind") != self.cfg.readout.kind
                     or saved.get("readout", {}).get("projector_query_mode")
                     != self.cfg.readout.projector_query_mode
                     or saved.get("query_encoder", {}).get("kind") != self.cfg.query_encoder.kind):
-                raise ValueError("checkpoint does not match the joint projector/query configuration")
+                raise ValueError("checkpoint does not match the projector/query configuration")
             if ckpt.get("generator_trainable"):
-                raise ValueError("joint projector checkpoint must not overwrite frozen reader weights")
-            layout = {name: getattr(self.readout, name) for name in (
-                "max_documents", "memories_per_document", "max_query_tokens",
-                "hidden_size", "query_dim")}
+                raise ValueError("projector checkpoint must not overwrite frozen reader weights")
+            layout = self._projector_layout()
             if ckpt.get("projector_layout") != layout:
-                raise ValueError("joint projector checkpoint has a different memory/query layout")
+                raise ValueError("projector checkpoint has a different memory/query layout")
             expected = {f"readout.{name}" for name, _ in self.readout.named_parameters()}
             if not expected.issubset(ckpt["state_dict"]):
-                raise ValueError("joint projector checkpoint is missing trained projection weights")
+                raise ValueError("projector checkpoint is missing trained projection weights")
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)

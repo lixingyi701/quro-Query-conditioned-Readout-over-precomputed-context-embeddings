@@ -107,9 +107,13 @@ def build_args():
     ap.add_argument("--device", default=None)
     ap.add_argument("--resume_from", default=None)
 
-    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector"], default=None)
+    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector"], default=None)
     ap.add_argument("--projector_hidden", type=int, default=None)
     ap.add_argument("--projector_query_mode", choices=["conditioned", "agnostic_matched"], default=None)
+    ap.add_argument("--projector_conditioning", choices=["cross_attention", "last"], default=None)
+    ap.add_argument("--projector_attention_dim", type=int, default=None)
+    ap.add_argument("--projector_heads", type=int, default=None)
+    ap.add_argument("--projector_cross_document", action="store_true")
     ap.add_argument("--query_encoder_kind", choices=["word_embedding", "generator"], default=None)
     ap.add_argument("--max_query_len", type=int, default=None)
     ap.add_argument("--output_query_mode",
@@ -201,6 +205,7 @@ def apply_overrides(cfg, args):
         ("d_readout", cfg.readout), ("cache_dir", cfg.data),
         ("train_file", cfg.data), ("max_docs", cfg.data),
         ("projector_hidden", cfg.readout), ("max_query_len", cfg.data),
+        ("projector_attention_dim", cfg.readout), ("projector_heads", cfg.readout),
     ]
     for name, target in simple:
         value = getattr(args, name)
@@ -210,6 +215,10 @@ def apply_overrides(cfg, args):
         cfg.readout.kind = args.readout
     if args.projector_query_mode:
         cfg.readout.projector_query_mode = args.projector_query_mode
+    if args.projector_conditioning:
+        cfg.readout.projector_conditioning = args.projector_conditioning
+    if args.projector_cross_document:
+        cfg.readout.projector_cross_document = True
     if args.query_encoder_kind:
         cfg.query_encoder.kind = args.query_encoder_kind
     if args.output_query_mode:
@@ -368,8 +377,11 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
 
 def run_evaluations(model, loaders, device, cfg, args, cache):
     out_dir = cfg.train.out_dir
-    budgets = ([int(x) for x in args.eval_budgets.split(",")] if args.eval_budgets
-               else [cfg.readout.max_budget])
+    if cfg.readout.kind == "shared_projector":
+        budgets = [None]
+    else:
+        budgets = ([int(x) for x in args.eval_budgets.split(",")] if args.eval_budgets
+                   else [cfg.readout.max_budget])
     modes = (args.eval_input_modes.split(",") if args.eval_input_modes
              else [cfg.decoder.input_mode])
     result = {
@@ -386,9 +398,18 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                                         cfg.query_encoder.representation),
         "query_encoder_kind": cfg.query_encoder.kind,
         "projector_query_mode": (cfg.readout.projector_query_mode
-                                 if cfg.readout.kind == "joint_projector" else None),
+                                 if cfg.readout.kind in {"joint_projector", "shared_projector"} else None),
         "projector_hidden": (cfg.readout.projector_hidden
-                             if cfg.readout.kind == "joint_projector" else None),
+                             if cfg.readout.kind in {"joint_projector", "shared_projector"} else None),
+        "projector_conditioning": (cfg.readout.projector_conditioning
+                                   if cfg.readout.kind == "shared_projector" else None),
+        "projector_cross_document": (cfg.readout.projector_cross_document
+                                      if cfg.readout.kind == "shared_projector" else None),
+        "projector_attention_dim": (cfg.readout.projector_attention_dim
+                                     if cfg.readout.kind == "shared_projector" else None),
+        "projector_heads": (cfg.readout.projector_heads
+                             if cfg.readout.kind == "shared_projector" else None),
+        "budget_policy": "all_cached" if cfg.readout.kind == "shared_projector" else "configured",
         "max_query_len": cfg.data.max_query_len,
         "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
         "kd_weight": args.kd_weight,
@@ -407,14 +428,15 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
     for mode in modes:
         model.decoder_input_mode = mode
         for budget in budgets:
+            budget_label = "full" if budget is None else budget
             for name, loader in loaders.items():
-                key = f"{name}|{mode}|B={budget}"
-                dump = (os.path.join(out_dir, f"attention_{name.replace('/', '_')}_{mode}_B{budget}.pt")
+                key = f"{name}|{mode}|B={budget_label}"
+                dump = (os.path.join(out_dir, f"attention_{name.replace('/', '_')}_{mode}_B{budget_label}.pt")
                         if args.dump_attn and "/" not in name else None)
                 aggregate, rows = evaluate(model, loader, device,
                                            cfg.train.gen_max_new_tokens, budget, dump)
                 result["metrics"][key] = aggregate
-                filename = f"predictions_{name.replace('/', '_')}_{mode}_B{budget}.json"
+                filename = f"predictions_{name.replace('/', '_')}_{mode}_B{budget_label}.json"
                 with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
                     # Every row, not a prefix: paired significance tests between
                     # arms need the whole split, and a 1.5-point difference is
@@ -445,18 +467,24 @@ def main():
 
     cache = LatentCache(cfg.data.cache_dir)
     cfg.readout.cache_hidden = cache.metadata.hidden_size
-    if cfg.readout.kind == "joint_projector":
+    if cfg.readout.kind in {"joint_projector", "shared_projector"}:
         if args.disable_generator_adapter or args.teacher_logits or args.kd_weight:
-            raise ValueError("joint_projector keeps published adapters active and uses gold CE only")
+            raise ValueError("projectors keep published adapters active and use gold CE only")
         if args.eval_input_modes and args.eval_input_modes != "D0":
-            raise ValueError("joint_projector's first experiment uses D0 for every evaluation")
-        expected = cfg.data.max_docs * cache.metadata.latent_size
-        if cfg.readout.max_budget != expected or cfg.readout.budget_buckets != [expected]:
-            raise ValueError(f"use --budget {expected} --budget_buckets {expected} for this K*m cache")
+            raise ValueError("projector experiments use D0 for every evaluation")
+        if cfg.readout.kind == "joint_projector":
+            expected = cfg.data.max_docs * cache.metadata.latent_size
+            if cfg.readout.max_budget != expected or cfg.readout.budget_buckets != [expected]:
+                raise ValueError(f"use --budget {expected} --budget_buckets {expected} for this K*m cache")
+        elif args.budget is not None or args.budget_buckets or args.eval_budgets:
+            raise ValueError("shared_projector preserves all memories; do not set budget/sweep flags")
     print(f"[cache] {cache.metadata.compressor}: {len(cache)} docs, "
           f"m={cache.metadata.latent_size}, h={cache.metadata.hidden_size}")
 
     stack, model = build_model(cfg, cache_hidden=cache.metadata.hidden_size)
+    if (cfg.readout.kind in {"joint_projector", "shared_projector"}
+            and cache.metadata.latent_size != stack.n_mem_tokens):
+        raise ValueError("cached memory count does not match the published reader's document slots")
     if args.disable_generator_adapter:
         stack.lm.disable_adapters()
         print("[generator] PISCO adapters disabled: plain Mistral-7B-Instruct-v0.2")
@@ -588,6 +616,8 @@ def main():
     model.train()
     rng = random.Random(cfg.train.seed)
     buckets = list(cfg.readout.budget_buckets)
+    full_budget = cfg.readout.kind == "shared_projector"
+    validation_budget = None if full_budget else cfg.readout.max_budget
     log_path = os.path.join(cfg.train.out_dir, "train_log.jsonl")
     started = time.time()
 
@@ -596,10 +626,10 @@ def main():
             nonlocal best
             name, loader = validation
             aggregate, _ = evaluate(model, loader, device,
-                                    cfg.train.gen_max_new_tokens, cfg.readout.max_budget)
+                                    cfg.train.gen_max_new_tokens, validation_budget)
             model.train()
             score = float(aggregate[cfg.train.select_metric])
-            record = {"step": done, "split": name, "val_budget": cfg.readout.max_budget,
+            record = {"step": done, "split": name, "val_budget": "full" if full_budget else validation_budget,
                       **{k: round(float(aggregate[k]), 4) for k in ("em", "substring", "f1")},
                       "seconds": round(time.time() - started, 1)}
             print(f"[val] {record}", flush=True)
@@ -611,13 +641,14 @@ def main():
                 model.save(os.path.join(cfg.train.out_dir, "checkpoint_best.pt"), step=done)
 
         # The zero-initialised native reader is an eligible best checkpoint.
-        if validation is not None and cfg.readout.kind == "joint_projector" and start_step == 0:
+        if (validation is not None and cfg.readout.kind in {"joint_projector", "shared_projector"}
+                and start_step == 0):
             validate(0)
         for step in range(start_step, cfg.train.steps):
             # Decays to zero so the trust region never constrains the final model.
             residual_weight = cfg.train.residual_weight * max(
                 0.0, 1.0 - step / max(1, cfg.train.residual_warmup_steps))
-            budget = (rng.choice(buckets) if cfg.train.budget_dropout
+            budget = (None if full_budget else rng.choice(buckets) if cfg.train.budget_dropout
                       else cfg.readout.max_budget)
 
             optimizer.zero_grad(set_to_none=True)
@@ -637,7 +668,8 @@ def main():
 
             if step % cfg.train.log_every == 0 or step + 1 == cfg.train.steps:
                 record = {"step": step + 1, **{k: round(v, 4) for k, v in totals.items()},
-                          "budget": budget, "residual_weight": round(residual_weight, 4),
+                          "budget": "full" if full_budget else budget,
+                          "residual_weight": round(residual_weight, 4),
                           "grad_norm": round(float(grad_norm), 3),
                           "lr": scheduler.get_last_lr()[0],
                           "seconds": round(time.time() - started, 1)}

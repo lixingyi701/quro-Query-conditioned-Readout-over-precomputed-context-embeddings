@@ -1,5 +1,8 @@
 # 冻结发布版 PISCO 的联合 query 条件投影
 
+**本页保留旧展平对照 JQ/J0m。当前推荐主臂是
+[共享文档投影器](SHARED_QUERY_PROJECTOR.md)，预设 `pisco_shared_projector`。**
+
 首轮问题：相同文档缓存、相同发布版 decoder、相同 memory 输入预算，
 仅训练 query 条件投影器，能否改善 QA？默认以 HotpotQA 多跳设置验证。
 

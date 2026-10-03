@@ -121,7 +121,12 @@ go/no-go corpus takes about 75 minutes and 17 GB at fp16.
 
 ## Correctness checks
 
-The frozen published-PISCO joint projector is available through
+The recommended frozen published-PISCO projector uses `--preset pisco_shared_projector`:
+one shared document MLP reads contextual query tokens through cross-attention,
+preserves every cached memory and supports variable K. See
+[shared projector design and run commands](docs/SHARED_QUERY_PROJECTOR.md).
+
+The previous joint flattening control is available through
 `--preset pisco_joint_projector`: all ten documents' memories and the ordered
 query word embeddings enter a two-layer residual MLP, preserving 80 memory slots.
 Only the projector trains. See [design and run commands](docs/JOINT_QUERY_PROJECTOR.md)

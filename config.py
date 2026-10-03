@@ -93,17 +93,25 @@ class ReadoutConfig:
     # Full-budget joint MLP; d_readout/attention knobs do not apply to this kind.
     projector_hidden: int = 128
     projector_query_mode: str = "conditioned"  # or parameter-matched fixed query
+    projector_conditioning: str = "cross_attention"  # shared kind: or "last"
+    projector_attention_dim: int = 256
+    projector_heads: int = 8
+    projector_cross_document: bool = False
 
     def __post_init__(self):
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
-        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "joint_projector"}:
+        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
         if self.projector_hidden < 1:
             raise ValueError("projector_hidden must be positive")
         if self.projector_query_mode not in {"conditioned", "agnostic_matched"}:
             raise ValueError(f"unknown projector_query_mode: {self.projector_query_mode}")
+        if self.projector_conditioning not in {"cross_attention", "last"}:
+            raise ValueError(f"unknown projector_conditioning: {self.projector_conditioning}")
+        if min(self.projector_attention_dim, self.projector_heads) < 1:
+            raise ValueError("projector attention dimensions must be positive")
         if self.prior_mode not in {"rank", "shared"}:
             raise ValueError(f"unknown prior_mode: {self.prior_mode}")
         if self.output_mode not in {"full", "pool_only", "delta_only"}:
@@ -344,23 +352,34 @@ class Config:
     def revalidate(self):
         for section in (self.readout, self.query_encoder, self.generator, self.decoder):
             section.__post_init__()
-        if self.readout.kind == "joint_projector":
-            if not self.data.max_docs or self.data.max_docs < 1 or self.data.max_query_len < 1:
-                raise ValueError("joint_projector needs positive max_docs and max_query_len")
+        if self.readout.kind in {"joint_projector", "shared_projector"}:
+            if ((self.data.max_docs is not None and self.data.max_docs < 1)
+                    or (self.readout.kind == "joint_projector" and self.data.max_docs is None)
+                    or self.data.max_query_len < 1):
+                raise ValueError("projectors need positive max_query_len and a valid document cap")
             if self.generator.lora_init != "frozen":
-                raise ValueError("joint_projector trains only its projector; freeze the generator")
+                raise ValueError("projectors train only their projector; freeze the generator")
             if (self.query_encoder.kind not in {"word_embedding", "generator"}
                     or not self.query_encoder.freeze or self.query_encoder.lora):
-                raise ValueError("joint_projector needs frozen word embeddings or generator states")
+                raise ValueError("projectors need frozen word embeddings or generator states")
             if self.readout.adaptive_budget or self.train.budget_dropout:
-                raise ValueError("joint_projector preserves K*m: disable adaptive/budget dropout")
+                raise ValueError("projectors preserve K*m: disable adaptive/budget dropout")
             if (self.readout.cosine_prior or self.readout.output_mode != "full"
                     or self.readout.out_proj_init not in {None, "zeros"}):
-                raise ValueError("joint_projector uses zero-initialised residual MLP without cosine prior")
+                raise ValueError("projectors use zero-initialised residual MLP without cosine prior")
             if self.decoder.input_mode != "D0" or self.decoder.query_text_dropout:
-                raise ValueError("joint_projector uses the native D0 prompt without query dropout")
+                raise ValueError("projectors use the native D0 prompt without query dropout")
             if self.data.prefer_teacher_output or self.train.residual_weight:
-                raise ValueError("joint_projector's first experiment uses gold answer CE only")
+                raise ValueError("projector experiments use gold answer CE only")
+            if (self.readout.kind == "shared_projector"
+                    and self.readout.projector_conditioning == "last"
+                    and self.query_encoder.kind != "generator"):
+                raise ValueError("the h_q last-token control requires contextual generator states")
+            if self.readout.kind == "shared_projector":
+                if (self.readout.projector_attention_dim % self.readout.projector_heads
+                        or (self.readout.projector_cross_document
+                            and self.readout.projector_hidden % self.readout.projector_heads)):
+                    raise ValueError("shared projector attention widths must be divisible by heads")
         return self
 
     def to_json(self, path: str):
@@ -369,6 +388,13 @@ class Config:
 
     def summary(self) -> str:
         r, g = self.readout, self.generator
+        if r.kind == "shared_projector":
+            return (f"[cfg] readout=shared_projector/{r.projector_query_mode}/"
+                    f"{r.projector_conditioning} hidden={r.projector_hidden} "
+                    f"attn={r.projector_attention_dim}/{r.projector_heads} "
+                    f"cross_document={r.projector_cross_document} K_cap={self.data.max_docs} "
+                    f"B=all_cached query={self.query_encoder.kind} "
+                    f"query_cap={self.data.max_query_len} | generator={g.kind}({g.lora_init})")
         if r.kind == "joint_projector":
             return (f"[cfg] readout=joint_projector/{r.projector_query_mode} "
                     f"hidden={r.projector_hidden} K={self.data.max_docs} "
@@ -435,6 +461,10 @@ def arm_label(cfg: Config) -> str:
         return "P"
     if r.kind == "joint_projector":
         return "JQ" if r.projector_query_mode == "conditioned" else "J0m"
+    if r.kind == "shared_projector":
+        label = ("S0m" if r.projector_query_mode == "agnostic_matched"
+                 else "SL" if r.projector_conditioning == "last" else "SQ")
+        return label + ("X" if r.projector_cross_document else "")
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":
@@ -567,12 +597,25 @@ def pisco_joint_projector_config() -> Config:
     return cfg.revalidate()
 
 
+def pisco_shared_projector_config() -> Config:
+    """Main arm: shared document MLP reads variable-length contextual query tokens."""
+    cfg = pisco_joint_projector_config()
+    cfg.readout.kind = "shared_projector"
+    cfg.readout.projector_hidden = 512
+    cfg.query_encoder.kind = "generator"
+    # Safety cap only; no padding to this length and no length-dependent weights.
+    cfg.data.max_query_len = 256
+    cfg.train.out_dir = os.path.join(paths.RUNS_DIR, "shared-projector")
+    return cfg.revalidate()
+
+
 PRESETS = {
     "toy": toy_config,
     "pisco_smoke": pisco_smoke_config,
     "pisco_gonogo": pisco_gonogo_config,
     "pisco_hotpot": pisco_hotpot_config,
     "pisco_joint_projector": pisco_joint_projector_config,
+    "pisco_shared_projector": pisco_shared_projector_config,
 }
 
 

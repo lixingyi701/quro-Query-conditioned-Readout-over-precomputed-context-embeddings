@@ -189,7 +189,10 @@ class FrozenReaderTests(unittest.TestCase):
             self.assertGreater(float(self.model.readout.out_proj.weight.grad.abs().sum()), 0.0)
             if step:
                 self.assertGreater(float(self.model.readout.memory_proj.weight.grad.abs().sum()), 0.0)
-                self.assertGreater(float(self.model.readout.query_proj.weight.grad.abs().sum()), 0.0)
+                query_projection = (self.model.readout.context_proj
+                                    if hasattr(self.model.readout, "context_proj")
+                                    else self.model.readout.query_proj)
+                self.assertGreater(float(query_projection.weight.grad.abs().sum()), 0.0)
             self.assertTrue(all(p.grad is None for p in self.model.lm.parameters()))
             optim.step()
         self.assertTrue(all(torch.equal(p, before[name]) for name, p in self.model.lm.named_parameters()))
@@ -214,7 +217,7 @@ class FrozenReaderTests(unittest.TestCase):
         self.assertEqual(step, 3)
         self.assertTrue(torch.equal(self.model.readout_cached(self.batch)["soft_tokens"], expected))
         incomplete = copy.deepcopy(ckpt)
-        del incomplete["state_dict"]["readout.query_proj.weight"]
+        del incomplete["state_dict"]["readout.out_proj.weight"]
         torch.save(incomplete, path)
         with self.assertRaisesRegex(ValueError, "missing trained"):
             self.model.load(path)
@@ -265,9 +268,10 @@ class FrozenReaderTests(unittest.TestCase):
         self.assertEqual(len(ckpt["optimizer"]["param_groups"]), 1)
         with open(os.path.join(cfg.train.out_dir, "result.json")) as f:
             result = json.load(f)
-        self.assertEqual(result["arm"], "JQ")
-        self.assertEqual(result["query_representation"], "word_embedding")
-        self.assertIn("dev/mismatch-q|D0|B=24", result["metrics"])
+        self.assertEqual(result["arm"], arm_label(cfg))
+        self.assertEqual(result["query_representation"], self.model.query_encoder.representation)
+        label = "full" if cfg.readout.kind == "shared_projector" else "24"
+        self.assertIn(f"dev/mismatch-q|D0|B={label}", result["metrics"])
 
     def test_bad_freeze_and_budget_settings_are_rejected(self):
         for section, name, value in [("generator", "lora_init", "pisco"),
@@ -304,7 +308,7 @@ class FrozenReaderTests(unittest.TestCase):
         except ImportError:
             self.skipTest("requires transformers and peft; no model download is needed")
         from src.generator import _configure_generator_training
-        from src.model import FrozenWordEmbeddingQueryEncoder, QuROModel
+        from src.model import FrozenWordEmbeddingQueryEncoder, GeneratorQueryEncoder, QuROModel
 
         base = MistralForCausalLM(MistralConfig(
             vocab_size=len(self.stack.tokenizer), hidden_size=16, intermediate_size=32,
@@ -321,8 +325,10 @@ class FrozenReaderTests(unittest.TestCase):
                     p.normal_(std=0.05)
         lm.set_adapter("decoder_adapter")
         _configure_generator_training(lm, "frozen", "decoder_adapter")
+        encoder = (GeneratorQueryEncoder(lm) if self.cfg.query_encoder.kind == "generator"
+                   else FrozenWordEmbeddingQueryEncoder(lm))
         model = QuROModel(self.cfg, lm, self.stack.tokenizer,
-                          FrozenWordEmbeddingQueryEncoder(lm), 8, 16)
+                          encoder, 8, 16)
         before = {name: p.detach().clone() for name, p in lm.named_parameters()}
         model.train()
         optim = torch.optim.AdamW(model.trainable_parameters(), lr=1e-2)
