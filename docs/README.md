@@ -5,6 +5,8 @@
 | 文件 | 内容 |
 |---|---|
 | [`SUPPORT_DOCUMENT_SUPERVISION.md`](SUPPORT_DOCUMENT_SUPERVISION.md) | SQ 支持文档辅助监督：实现、可见性注释、匹配继续训练与判据 |
+| [`SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md`](SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md) | **支持文档监督首轮结果**：QA 零收益（+0.07 F1），辅助头学会分文档但不用问题 |
+| [`SHARED_QUERY_PROJECTOR_RESULTS.md`](SHARED_QUERY_PROJECTOR_RESULTS.md) | 共享文档投影器首轮结果：格式收益与约 1 个 F1 点的问题条件化空间 |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
 | [`QURO_V0.1_IMPLEMENTATION_PLAN.md`](QURO_V0.1_IMPLEMENTATION_PLAN.md) | v0.1 实施方案 + §10.5–§10.8 实施过程中的全部实测发现 |
 | [`QURO_V0.2_RESULTS_AND_ANALYSIS.md`](QURO_V0.2_RESULTS_AND_ANALYSIS.md) | **v0.2 实验结果与分析**（主文档）：ξ_off 扫描、D1 实验、定位讨论 |

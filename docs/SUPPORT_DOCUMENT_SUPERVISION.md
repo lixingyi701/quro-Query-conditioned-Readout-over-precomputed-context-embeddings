@@ -1,5 +1,7 @@
 # 支持文档辅助监督：实现与首轮运行方案
 
+首轮结果见 [SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md](SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md)。
+
 ## 目的与范围
 
 在已训练的 SQ 上，检验支持文档标签能否让 query–memory 交互产生更有用的
