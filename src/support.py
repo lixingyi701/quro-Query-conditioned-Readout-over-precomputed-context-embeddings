@@ -7,6 +7,8 @@ import json
 import torch
 import torch.nn.functional as F
 
+from .support_metrics import support_scores
+
 
 def manifest_digest(manifest):
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
@@ -87,19 +89,6 @@ def balanced_support_loss(logits, labels, mask):
     if bool(active.any()):
         return losses[active].mean(), active.sum()
     return safe.sum()*0.0, active.sum()
-
-
-def support_scores(logits, labels, mask):
-    """Rank valid documents; Recall@2 and exact set recovery at gold cardinality."""
-    valid = [i for i, keep in enumerate(mask) if keep]
-    gold = {i for i in valid if labels[i] == 1}
-    if not gold:
-        return None
-    ranked = sorted(valid, key=lambda i: (-logits[i], i))
-    chosen = set(ranked[:2])
-    return {"recall_at_2": len(chosen & gold)/len(gold),
-            "both_at_2": float(gold <= chosen) if len(gold) == 2 else None,
-            "exact_at_gold_k": float(set(ranked[:len(gold)]) == gold)}
 
 
 def annotate_row(row, corpus, tokenizer, cache_manifest, encoder_length=128,

@@ -117,6 +117,8 @@ def build_args():
     ap.add_argument("--projector_cross_document", action="store_true")
     ap.add_argument("--support_head", action="store_true",
                     help="attach the same small head in both continuation arms")
+    ap.add_argument("--support_head_input", choices=["hidden", "output"], default=None,
+                    help="classify u (legacy) or LN(mean(E)) with auxiliary gradients through Wo")
     ap.add_argument("--support_loss_weight", type=float, default=None)
     ap.add_argument("--support_warmup_steps", type=int, default=None)
     ap.add_argument("--support_visibility_policy", choices=["visible", "original"], default=None)
@@ -213,6 +215,7 @@ def apply_overrides(cfg, args):
         ("projector_hidden", cfg.readout), ("max_query_len", cfg.data),
         ("projector_attention_dim", cfg.readout), ("projector_heads", cfg.readout),
         ("support_loss_weight", cfg.train), ("support_warmup_steps", cfg.train),
+        ("support_head_input", cfg.readout),
         ("support_visibility_policy", cfg.train),
     ]
     for name, target in simple:
@@ -361,6 +364,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
                 sm = batch["support_loss_mask"][i, :n].cpu().tolist()
                 visible = batch["support_visible"][i]
                 row["support"] = {"logits": scores, "labels": ys, "label_mask": mask,
+                                  "doc_ids": list(batch["retrieved_doc_ids"][i]),
                                   "loss_mask": sm, "visible": visible,
                                   "metrics": support_scores(scores, ys, mask)}
             # Under a mismatch control the two routes carry different questions, so
@@ -395,15 +399,20 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     if model.cfg.readout.support_head:
         aggregate["support_questions"] = len(supported)
     if supported:
-        for key in ("recall_at_2", "both_at_2", "exact_at_gold_k"):
+        for key in ("recall_at_2", "both_at_2", "recall_at_4", "both_at_4",
+                    "recall_at_6", "both_at_6", "exact_at_gold_k"):
             values = [s["metrics"][key] for s in supported if s["metrics"][key] is not None]
             aggregate["support_"+key] = sum(values)/len(values) if values else None
         visible_questions = [s for s in supported if all(v is True for y, v in
                              zip(s["labels"], s["visible"]) if y)]
         aggregate["support_all_visible_questions"] = len(visible_questions)
-        aggregate["support_recall_at_2_all_visible"] = (
-            sum(s["metrics"]["recall_at_2"] for s in visible_questions)/len(visible_questions)
-            if visible_questions else None)
+        for k in (2, 4, 6):
+            for metric in ("recall", "both"):
+                key = f"{metric}_at_{k}"
+                values = [s["metrics"][key] for s in visible_questions
+                          if s["metrics"][key] is not None]
+                aggregate[f"support_{key}_all_visible"] = (
+                    sum(values)/len(values) if values else None)
         visible_rows = [r for r in supported_rows if all(v is True for y, v in
                         zip(r["support"]["labels"], r["support"]["visible"]) if y)]
         aggregate["support_all_visible_qa_f1"] = (
@@ -449,6 +458,7 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "projector_heads": (cfg.readout.projector_heads
                              if cfg.readout.kind == "shared_projector" else None),
         "support_head": cfg.readout.support_head,
+        "support_head_input": cfg.readout.support_head_input,
         "support_loss_weight": cfg.train.support_loss_weight,
         "support_warmup_steps": cfg.train.support_warmup_steps,
         "support_visibility_policy": cfg.train.support_visibility_policy,
@@ -738,7 +748,8 @@ def main():
                           "seconds": round(time.time() - started, 1)}
                 if cfg.readout.support_head:
                     modules = {"support_head_grad_norm": model.readout.support_classifier,
-                               "query_condition_grad_norm": model.readout.context_proj}
+                               "query_condition_grad_norm": model.readout.context_proj,
+                               "output_projection_grad_norm": model.readout.out_proj}
                     for key, module in modules.items():
                         gradients = [p.grad.detach() for p in module.parameters() if p.grad is not None]
                         record[key] = (round(float(torch.stack([g.float().norm() for g in gradients]).norm()), 6)

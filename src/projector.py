@@ -109,7 +109,7 @@ class SharedDocumentProjector(nn.Module):
     def __init__(self, hidden_size, query_dim, memories_per_document, hidden_dim=512,
                  attention_dim=256, num_heads=8, conditioning="cross_attention",
                  query_mode="conditioned", cross_document=False, query_position=False,
-                 support_head=False):
+                 support_head=False, support_head_input="hidden"):
         super().__init__()
         if min(hidden_size, query_dim, memories_per_document, hidden_dim,
                attention_dim, num_heads) < 1:
@@ -120,6 +120,8 @@ class SharedDocumentProjector(nn.Module):
             raise ValueError(f"unknown query conditioning: {conditioning}")
         if query_mode not in {"conditioned", "agnostic_matched"}:
             raise ValueError(f"unknown projector query mode: {query_mode}")
+        if support_head_input not in {"hidden", "output"}:
+            raise ValueError(f"unknown support head input: {support_head_input}")
         self.hidden_size, self.query_dim = hidden_size, query_dim
         self.memories_per_document, self.hidden_dim = memories_per_document, hidden_dim
         self.attention_dim, self.num_heads = attention_dim, num_heads
@@ -148,8 +150,10 @@ class SharedDocumentProjector(nn.Module):
         fixed = torch.randn(1, 4, query_dim, generator=torch.Generator().manual_seed(0))
         self.register_buffer("fixed_query", fixed if not self.needs_query else None)
         # Created after all existing weights: enabling this head preserves their init.
-        self.support_norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
-        self.support_classifier = nn.Linear(hidden_dim, 1) if support_head else None
+        self.support_head_input = support_head_input
+        support_dim = hidden_size if support_head_input == "output" else hidden_dim
+        self.support_norm = nn.LayerNorm(support_dim, elementwise_affine=False)
+        self.support_classifier = nn.Linear(support_dim, 1) if support_head else None
 
     @staticmethod
     def positional_features(mask, width, dtype):
@@ -230,14 +234,18 @@ class SharedDocumentProjector(nn.Module):
                                                need_weights=False)
             u = u + mixed
         delta = self.out_proj(u).reshape(b, k, m, h)
+        delta = torch.where(dm[:, :, None, None], delta, 0.0)
+        output = memory + delta
         support_logits = None
         if return_support and self.support_classifier is not None:
-            support_logits = self.support_classifier(self.support_norm(u)).squeeze(-1)
+            # Classify the SAME E sent to the reader, without detaching it or
+            # normalising the generation path. Output supervision reaches Wo.
+            features = output.mean(2) if self.support_head_input == "output" else u
+            support_logits = self.support_classifier(self.support_norm(features)).squeeze(-1)
             support_logits = torch.where(dm, support_logits, 0.0)
-        delta = torch.where(dm[:, :, None, None], delta, 0.0)
         token_mask = dm[:, :, None].expand(b, k, m).reshape(b, k*m)
         denom = token_mask.sum().clamp_min(1) * h
-        return (memory + delta).reshape(b, k*m, h), {
+        return output.reshape(b, k*m, h), {
             "attention": None, "query_attention": attention, "support_logits": support_logits,
             "token_mask": token_mask, "latent_mask": token_mask,
             "output_mode": "full", "delta_ms": delta.square().sum() / denom,

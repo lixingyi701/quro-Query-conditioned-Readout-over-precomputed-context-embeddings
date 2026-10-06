@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`SUPPORT_OUTPUT_SUPERVISION.md`](SUPPORT_OUTPUT_SUPERVISION.md) | 离线 Recall/both@4/@6 与最终 E 分类监督：梯度、匹配训练和判据 |
 | [`SUPPORT_DOCUMENT_SUPERVISION.md`](SUPPORT_DOCUMENT_SUPERVISION.md) | SQ 支持文档辅助监督：实现、可见性注释、匹配继续训练与判据 |
 | [`SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md`](SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md) | **支持文档监督首轮结果**：QA 零收益（+0.07 F1），辅助头学会分文档但不用问题 |
 | [`SHARED_QUERY_PROJECTOR_RESULTS.md`](SHARED_QUERY_PROJECTOR_RESULTS.md) | 共享文档投影器首轮结果：格式收益与约 1 个 F1 点的问题条件化空间 |

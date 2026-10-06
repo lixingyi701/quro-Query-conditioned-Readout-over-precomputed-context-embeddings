@@ -2,6 +2,9 @@
 
 首轮结果见 [SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md](SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md)。
 
+后续两项任务见 [SUPPORT_OUTPUT_SUPERVISION.md](SUPPORT_OUTPUT_SUPERVISION.md)：
+离线 @4/@6 诊断与 `--support_head_input output` 输出端监督。本页描述默认 hidden 头。
+
 ## 目的与范围
 
 在已训练的 SQ 上，检验支持文档标签能否让 query–memory 交互产生更有用的

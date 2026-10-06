@@ -29,6 +29,8 @@ constraints, ready-made caches, and the next experiments in priority order.
 The shared-projector support-document supervision implementation and matched
 continuation commands are in
 [`docs/SUPPORT_DOCUMENT_SUPERVISION.md`](docs/SUPPORT_DOCUMENT_SUPERVISION.md).
+For saved-prediction top-k diagnostics and supervision on the final projected
+embeddings, see [`docs/SUPPORT_OUTPUT_SUPERVISION.md`](docs/SUPPORT_OUTPUT_SUPERVISION.md).
 
 [`docs/`](docs/) holds our own design notes, plans and results;
 [`article/`](article/) holds reading notes on other people's papers;

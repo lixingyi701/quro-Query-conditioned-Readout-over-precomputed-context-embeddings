@@ -98,6 +98,7 @@ class ReadoutConfig:
     projector_heads: int = 8
     projector_cross_document: bool = False
     support_head: bool = False                 # training-only document classifier
+    support_head_input: str = "hidden"          # hidden: u_i; output: LN(mean(E_i))
 
     def __post_init__(self):
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
@@ -111,6 +112,8 @@ class ReadoutConfig:
             raise ValueError(f"unknown projector_query_mode: {self.projector_query_mode}")
         if self.projector_conditioning not in {"cross_attention", "last"}:
             raise ValueError(f"unknown projector_conditioning: {self.projector_conditioning}")
+        if self.support_head_input not in {"hidden", "output"}:
+            raise ValueError(f"unknown support_head_input: {self.support_head_input}")
         if min(self.projector_attention_dim, self.projector_heads) < 1:
             raise ValueError("projector attention dimensions must be positive")
         if self.prior_mode not in {"rank", "shared"}:
@@ -406,7 +409,8 @@ class Config:
                     f"{r.projector_conditioning} hidden={r.projector_hidden} "
                     f"attn={r.projector_attention_dim}/{r.projector_heads} "
                     f"cross_document={r.projector_cross_document} K_cap={self.data.max_docs} "
-                    f"support_head={r.support_head} support_weight={self.train.support_loss_weight} "
+                    f"support_head={r.support_head}/{r.support_head_input} "
+                    f"support_weight={self.train.support_loss_weight} "
                     f"B=all_cached query={self.query_encoder.kind} "
                     f"query_cap={self.data.max_query_len} | generator={g.kind}({g.lora_init})")
         if r.kind == "joint_projector":
@@ -479,7 +483,8 @@ def arm_label(cfg: Config) -> str:
         label = ("S0m" if r.projector_query_mode == "agnostic_matched"
                  else "SL" if r.projector_conditioning == "last" else "SQ")
         return (label + ("X" if r.projector_cross_document else "")
-                + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else ""))
+                + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else "")
+                + ("E" if r.support_head and r.support_head_input == "output" else ""))
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":

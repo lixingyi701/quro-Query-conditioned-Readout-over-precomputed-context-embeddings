@@ -373,7 +373,8 @@ class QuROModel(nn.Module):
                 self.d_gen, query_encoder.out_dim, self.n_mem_tokens, r.projector_hidden,
                 r.projector_attention_dim, r.projector_heads, r.projector_conditioning,
                 r.projector_query_mode, r.projector_cross_document,
-                query_position=cfg.query_encoder.kind == "word_embedding", support_head=r.support_head)
+                query_position=cfg.query_encoder.kind == "word_embedding", support_head=r.support_head,
+                support_head_input=r.support_head_input)
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
@@ -855,6 +856,8 @@ class QuROModel(nn.Module):
         layout = {name: getattr(self.readout, name) for name in fields}
         if isinstance(self.readout, SharedDocumentProjector):
             layout["support_head"] = self.readout.support_classifier is not None
+            layout["support_head_input"] = (self.readout.support_head_input
+                                             if layout["support_head"] else None)
         return layout
 
     def load(self, path, strict=False, optimizer=None, scheduler=None,
@@ -874,12 +877,15 @@ class QuROModel(nn.Module):
             new_head = False
             if isinstance(self.readout, SharedDocumentProjector):
                 saved_layout.setdefault("support_head", False)
+                saved_layout.setdefault("support_head_input",
+                                        "hidden" if saved_layout["support_head"] else None)
                 new_head = (allow_new_support_head and layout["support_head"]
                             and not saved_layout["support_head"])
                 if new_head:
                     if optimizer is not None or scheduler is not None:
                         raise ValueError("new support head requires weights-only warm start")
                     saved_layout["support_head"] = True
+                    saved_layout["support_head_input"] = layout["support_head_input"]
             if saved_layout != layout:
                 raise ValueError("projector checkpoint has a different memory/query layout")
             expected = {f"readout.{name}" for name, _ in self.readout.named_parameters()}
