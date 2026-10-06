@@ -2,7 +2,8 @@
 
 `--projector_query_mode none` 在共享投影器上移除 query 条件分支，仅训练文档
 残差 MLP。它与已有 `agnostic_matched`（S0m，固定随机条件向量）是两个不同
-对照。本页说明实现与未来实验协议，**不包含新的真实模型 QA 结果**。
+对照。本页说明实现与实验协议；结果见
+[QUERY_PROJECTOR_ABLATION_RESULTS.md](QUERY_PROJECTOR_ABLATION_RESULTS.md)。
 
 ## 结构与参数
 
