@@ -102,7 +102,8 @@ class SharedDocumentProjector(nn.Module):
     """Shared m->m residual MLP, preceded by memory-to-query attention.
 
     K and question length are runtime axes, never axes of a learned weight.
-    Optional document attention mixes query-conditioned document hidden vectors
+    query_mode=none removes the condition branch and trains a document-only MLP.
+    Optional document attention mixes document hidden vectors
     without document/rank positional embeddings, hence is permutation equivariant.
     """
 
@@ -118,12 +119,14 @@ class SharedDocumentProjector(nn.Module):
             raise ValueError("attention widths must be divisible by num_heads")
         if conditioning not in {"cross_attention", "last"}:
             raise ValueError(f"unknown query conditioning: {conditioning}")
-        if query_mode not in {"conditioned", "agnostic_matched"}:
+        if query_mode not in {"conditioned", "agnostic_matched", "none"}:
             raise ValueError(f"unknown projector query mode: {query_mode}")
         if support_head_input not in {"hidden", "output"}:
             raise ValueError(f"unknown support head input: {support_head_input}")
         if fusion not in {"none", "additive", "film"}:
             raise ValueError(f"unknown projector fusion: {fusion}")
+        if query_mode == "none" and fusion != "none":
+            raise ValueError("query_mode=none removes the query and gamma branches; use fusion=none")
         self.hidden_size, self.query_dim = hidden_size, query_dim
         self.memories_per_document, self.hidden_dim = memories_per_document, hidden_dim
         self.attention_dim, self.num_heads = attention_dim, num_heads
@@ -150,7 +153,7 @@ class SharedDocumentProjector(nn.Module):
                                                          dropout=0.0, batch_first=True)
                                    if cross_document else None)
         fixed = torch.randn(1, 4, query_dim, generator=torch.Generator().manual_seed(0))
-        self.register_buffer("fixed_query", fixed if not self.needs_query else None)
+        self.register_buffer("fixed_query", fixed if query_mode == "agnostic_matched" else None)
         # Created after all existing weights: enabling this head preserves their init.
         self.support_head_input = support_head_input
         support_dim = hidden_size if support_head_input == "output" else hidden_dim
@@ -164,6 +167,14 @@ class SharedDocumentProjector(nn.Module):
         if self.gamma_proj is not None:
             nn.init.zeros_(self.gamma_proj.weight)
             nn.init.zeros_(self.gamma_proj.bias)
+        if query_mode == "none":
+            # Consume the legacy initialisation draws BEFORE removing the branch:
+            # shared weights, optional heads, and the subsequent RNG state stay
+            # bit-identical to SQ with the same seed/settings. These temporary
+            # modules are not retained in parameters, the optimiser or state_dict.
+            for name in ("query_norm", "context_norm", "to_value", "to_query",
+                         "to_key", "context_proj", "fusion_norm"):
+                setattr(self, name, None)
 
     @staticmethod
     def positional_features(mask, width, dtype):
@@ -179,6 +190,8 @@ class SharedDocumentProjector(nn.Module):
 
     def _query_context(self, z, dm, query_emb, query_mask, return_attn=False):
         """Memory-to-question readout b = context_proj(LN c); also used for gamma-only swaps."""
+        if self.query_mode == "none":
+            raise ValueError("query context is disabled in the document-only projector")
         b, k, m, _ = z.shape
         if self.needs_query:
             if (query_emb is None or query_emb.ndim != 3
@@ -243,7 +256,11 @@ class SharedDocumentProjector(nn.Module):
             raise ValueError("each query needs at least one valid document")
         memory = torch.where(dm[:, :, None, None], doc_latents.detach().float(), 0.0)
         z = self.memory_norm(memory)
-        b_query, attention = self._query_context(z, dm, query_emb, query_mask, return_attn)
+        h_doc = self.memory_proj(z.flatten(2))  # includes the legacy memory bias
+        if self.query_mode == "none":
+            b_query, attention = torch.zeros_like(h_doc), None
+        else:
+            b_query, attention = self._query_context(z, dm, query_emb, query_mask, return_attn)
         # Intervention-only path: gamma may read a different question while h and
         # b stay those of the correct one. Training never passes these arguments.
         if (gamma_query_emb is not None or gamma_zero) and self.gamma_proj is None:
@@ -252,7 +269,6 @@ class SharedDocumentProjector(nn.Module):
             raise ValueError("choose either a zero gamma or a swapped gamma question")
         b_gamma = (b_query if gamma_query_emb is None else
                    self._query_context(z, dm, gamma_query_emb, gamma_query_mask)[0])
-        h_doc = self.memory_proj(z.flatten(2))  # includes the legacy memory bias
         gamma = product = update = None
         preactivation = h_doc + b_query
         if self.gamma_proj is not None:

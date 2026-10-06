@@ -112,7 +112,8 @@ def build_args():
 
     ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector"], default=None)
     ap.add_argument("--projector_hidden", type=int, default=None)
-    ap.add_argument("--projector_query_mode", choices=["conditioned", "agnostic_matched"], default=None)
+    ap.add_argument("--projector_query_mode", choices=["conditioned", "agnostic_matched", "none"], default=None,
+                    help="conditioned: real query; agnostic_matched: fixed vectors; none: remove query branch")
     ap.add_argument("--projector_conditioning", choices=["cross_attention", "last"], default=None)
     ap.add_argument("--projector_attention_dim", type=int, default=None)
     ap.add_argument("--projector_heads", type=int, default=None)
@@ -496,6 +497,8 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "query_encoder_kind": cfg.query_encoder.kind,
         "projector_query_mode": (cfg.readout.projector_query_mode
                                  if cfg.readout.kind in {"joint_projector", "shared_projector"} else None),
+        "projector_uses_query": getattr(model.readout, "needs_query", None),
+        "parameters": model.parameter_report(),
         "projector_hidden": (cfg.readout.projector_hidden
                              if cfg.readout.kind in {"joint_projector", "shared_projector"} else None),
         "projector_conditioning": (cfg.readout.projector_conditioning
@@ -811,7 +814,8 @@ def main():
                                "query_condition_grad_norm": model.readout.context_proj,
                                "output_projection_grad_norm": model.readout.out_proj}
                     for key, module in modules.items():
-                        gradients = [p.grad.detach() for p in module.parameters() if p.grad is not None]
+                        gradients = ([p.grad.detach() for p in module.parameters() if p.grad is not None]
+                                     if module is not None else [])
                         record[key] = (round(float(torch.stack([g.float().norm() for g in gradients]).norm()), 6)
                                        if gradients else None)
                 gamma_module = getattr(model.readout, "gamma_proj", None)

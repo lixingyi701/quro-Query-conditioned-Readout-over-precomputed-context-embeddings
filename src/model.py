@@ -562,6 +562,9 @@ class QuROModel(nn.Module):
         # the pooled state left behind is still the readout's own question.
         gamma_kwargs = {}
         if "gamma_query_ids" in batch:
+            if (isinstance(self.readout, SharedDocumentProjector)
+                    and self.readout.query_mode == "none"):
+                raise ValueError("gamma interventions require a query-conditioned gamma branch")
             gamma_kwargs = {"gamma_query_emb": self.encode_query(batch["gamma_query_ids"],
                                                                  batch["gamma_query_mask"]),
                             "gamma_query_mask": batch["gamma_query_mask"][:, :self.cfg.data.max_query_len]}
@@ -869,6 +872,7 @@ class QuROModel(nn.Module):
                         "query_position"))
         layout = {name: getattr(self.readout, name) for name in fields}
         if isinstance(self.readout, SharedDocumentProjector):
+            layout["query_mode"] = self.readout.query_mode
             layout["fusion"] = self.readout.fusion
             layout["support_head"] = self.readout.support_classifier is not None
             layout["support_head_input"] = (self.readout.support_head_input
@@ -892,6 +896,13 @@ class QuROModel(nn.Module):
             new_head = False
             new_fusion = False
             if isinstance(self.readout, SharedDocumentProjector):
+                saved_layout.setdefault("query_mode", saved.get("readout", {}).get("projector_query_mode"))
+                if self.readout.query_mode == "none":
+                    query_prefixes = tuple(f"readout.{name}." for name in
+                                           ("to_value", "to_query", "to_key", "context_proj", "gamma_proj"))
+                    if any(name == "readout.fixed_query" or name.startswith(query_prefixes)
+                           for name in ckpt["state_dict"]):
+                        raise ValueError("document-only checkpoint unexpectedly contains query branch weights")
                 saved_layout.setdefault("fusion", "none")
                 saved_fusion = saved.get("readout", {}).get("projector_fusion", "none")
                 if saved_fusion != saved_layout["fusion"]:

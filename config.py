@@ -92,7 +92,8 @@ class ReadoutConfig:
 
     # Full-budget joint MLP; d_readout/attention knobs do not apply to this kind.
     projector_hidden: int = 128
-    projector_query_mode: str = "conditioned"  # or parameter-matched fixed query
+    # conditioned: real query; agnostic_matched: fixed vectors; none: document MLP only.
+    projector_query_mode: str = "conditioned"
     projector_conditioning: str = "cross_attention"  # shared kind: or "last"
     projector_attention_dim: int = 256
     projector_heads: int = 8
@@ -112,7 +113,7 @@ class ReadoutConfig:
             raise ValueError(f"unknown readout kind: {self.kind}")
         if self.projector_hidden < 1:
             raise ValueError("projector_hidden must be positive")
-        if self.projector_query_mode not in {"conditioned", "agnostic_matched"}:
+        if self.projector_query_mode not in {"conditioned", "agnostic_matched", "none"}:
             raise ValueError(f"unknown projector_query_mode: {self.projector_query_mode}")
         if self.projector_conditioning not in {"cross_attention", "last"}:
             raise ValueError(f"unknown projector_conditioning: {self.projector_conditioning}")
@@ -376,6 +377,11 @@ class Config:
             raise ValueError("support loss requires an enabled support head")
         if self.readout.projector_fusion != "none" and self.readout.kind != "shared_projector":
             raise ValueError("projector_fusion requires shared_projector")
+        if self.readout.projector_query_mode == "none":
+            if self.readout.kind != "shared_projector":
+                raise ValueError("projector_query_mode=none requires shared_projector")
+            if self.readout.projector_fusion != "none":
+                raise ValueError("projector_query_mode=none removes the query and gamma branches; use fusion=none")
         if self.readout.projector_gamma_frozen and self.readout.projector_fusion == "none":
             raise ValueError("projector_gamma_frozen needs an additive/film gamma module")
         if self.readout.kind in {"joint_projector", "shared_projector"}:
@@ -491,7 +497,8 @@ def arm_label(cfg: Config) -> str:
     if r.kind == "joint_projector":
         return "JQ" if r.projector_query_mode == "conditioned" else "J0m"
     if r.kind == "shared_projector":
-        label = ("S0m" if r.projector_query_mode == "agnostic_matched"
+        label = ("S0" if r.projector_query_mode == "none"
+                 else "S0m" if r.projector_query_mode == "agnostic_matched"
                  else "SL" if r.projector_conditioning == "last" else "SQ")
         return (label + ("X" if r.projector_cross_document else "")
                 + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else "")

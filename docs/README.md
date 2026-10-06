@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`QUERY_PROJECTOR_ABLATION.md`](QUERY_PROJECTOR_ABLATION.md) | 标准 S0 消融：移除 query 分支、同尺寸文档 MLP、初始化对齐及独立训练协议 |
 | [`QUERY_MODULATED_FUSION_RESULTS.md`](QUERY_MODULATED_FUSION_RESULTS.md) | **FiLM 调制对照结果**：FiLM−AddG +0.04 F1，零收益；γ 冻结对照 G0 表明共有的 0.9 点来自样本顺序；单 seed 噪声约 0.8 F1 |
 | [`SUPPORT_OUTPUT_SUPERVISION_RESULTS.md`](SUPPORT_OUTPUT_SUPERVISION_RESULTS.md) | **输出端支持监督结果**：QA 零收益（−0.01 F1），最终 E 上的头更不用问题；离线 top-k@6 覆盖 87% gold |
 | [`QUERY_MODULATED_FUSION.md`](QUERY_MODULATED_FUSION.md) | 问题条件文档调制：等容量 AddG/FiLM、恒等起点、日志与配对确认协议 |

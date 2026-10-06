@@ -5,6 +5,8 @@
 本篇 m 个残差。原来的全局展平版保留为独立对照，不改变其配置或 checkpoint。
 
 首轮结果见 [SHARED_QUERY_PROJECTOR_RESULTS.md](SHARED_QUERY_PROJECTOR_RESULTS.md)。
+标准无 query 文档 MLP 消融 S0、公共权重初始化与独立训练协议见
+[QUERY_PROJECTOR_ABLATION.md](QUERY_PROJECTOR_ABLATION.md)。
 支持文档辅助监督的最小扩展、可见性注释和继续训练对照见
 [SUPPORT_DOCUMENT_SUPERVISION.md](SUPPORT_DOCUMENT_SUPERVISION.md)。
 
@@ -84,6 +86,7 @@ epsilon 和零/近零方差输入仍会影响输出范数。softmax 使每个 he
 | SQ | 共享文档 MLP + token query attention | 37,782,016 |
 | SQX | SQ + 文档间 attention | 38,832,640 |
 | SL | last-token h_q + 共享文档 MLP | 35,684,864 |
+| S0 | `projector_query_mode=none`，移除条件分支，仅文档 MLP | 33,587,712 |
 | S0m | SQ，query 换固定占位输入 | 与 SQ 完全相同 |
 
 S0m 不读取实际 query 或其长度，固定 4 个占位向量走同样 attention/MLP；X
@@ -114,6 +117,10 @@ python -m src.train --preset pisco_shared_projector --query_encoder_kind word_em
 # 参数量匹配的固定 query 对照
 python -m src.train --preset pisco_shared_projector --projector_query_mode agnostic_matched \
   --out_dir /data02/quro/runs/shared_agnostic --query_control --doc_control
+
+# 标准 query 分支消融：独立训练文档 MLP，不从 SQ checkpoint 关闭 query
+python -m src.train --preset pisco_shared_projector --projector_query_mode none \
+  --out_dir /data02/quro/runs/shared_no_query --query_control --doc_control
 
 # 同一 checkpoint 改为 K<=2：不需要重新训练，不需要设置 budget
 python -m src.train --preset pisco_shared_projector --eval_only --max_docs 2 \
