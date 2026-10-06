@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`QURO_PROJECTOR_RESEARCH_UPDATE_20261006.md`](QURO_PROJECTOR_RESEARCH_UPDATE_20261006.md) | **截至 2026-10-06 的投影器分支完整总结**：场景与动机、创新边界、具体实现、各轮实验、标准 SQ/S0 两种子消融、当前问题与后续缺口 |
 | [`QURO_RESEARCH_UPDATE_20261002.md`](QURO_RESEARCH_UPDATE_20261002.md) | **截至 2026-10-02 的综合实验总结**：六个分支、方案解释、正负结果、失败定位与结论边界；包含小预算读出、R/RQ、Direct-State 和 W |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
 | [`QURO_V0.1_IMPLEMENTATION_PLAN.md`](QURO_V0.1_IMPLEMENTATION_PLAN.md) | v0.1 实施方案 + §10.5–§10.8 实施过程中的全部实测发现 |
@@ -13,6 +14,14 @@
 | [`ENCODER_SCALING_INNOVATION_ANALYSIS.md`](ENCODER_SCALING_INNOVATION_ANALYSIS.md) | 早期方案可行性分析（放大 encoder 路线） |
 
 原始实验数据在 [`../results/`](../results/)。
+
+## 投影器分支进展（截至 2026-10-06）
+
+详见 [投影器分支完整总结](QURO_PROJECTOR_RESEARCH_UPDATE_20261006.md)。该报告基于 `feat/pisco-joint-query-projector@102653d`，不表示分支代码已合并到 main。
+
+- **共同适配收益明显，query 增量尚未确立**：标准 SQ−S0 两种子平均 test F1 +0.37，题目级配对 95% CI [−0.01, +0.74]；comparison 存在局部信号，bridge 接近零。
+- **支持监督与 γ 扩展未建立额外 QA 收益**：分类改善、错配问题敏感性与正常 QA 增量需要分别判断。
+- **下一步优先补机制与复用证据**：复核当前 SQ/S0 的读取缺口，检验同一缓存多问题，并测量端到端成本。
 
 ## 综合进展（截至 2026-10-02）
 
