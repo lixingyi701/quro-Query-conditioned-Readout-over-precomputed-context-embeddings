@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`QUERY_MODULATED_FUSION_RESULTS.md`](QUERY_MODULATED_FUSION_RESULTS.md) | **FiLM 调制对照结果**：FiLM−AddG +0.04 F1，零收益；修正大 5.6 倍但 QA 和问题依赖不变 |
 | [`SUPPORT_OUTPUT_SUPERVISION_RESULTS.md`](SUPPORT_OUTPUT_SUPERVISION_RESULTS.md) | **输出端支持监督结果**：QA 零收益（−0.01 F1），最终 E 上的头更不用问题；离线 top-k@6 覆盖 87% gold |
 | [`QUERY_MODULATED_FUSION.md`](QUERY_MODULATED_FUSION.md) | 问题条件文档调制：等容量 AddG/FiLM、恒等起点、日志与配对确认协议 |
 | [`SUPPORT_OUTPUT_SUPERVISION.md`](SUPPORT_OUTPUT_SUPERVISION.md) | 离线 Recall/both@4/@6 与最终 E 分类监督：梯度、匹配训练和判据 |
