@@ -99,6 +99,8 @@ class ReadoutConfig:
     projector_cross_document: bool = False
     # none: legacy SQ; additive/film: matched zero-initialised gamma branches.
     projector_fusion: str = "none"
+    # Control arm: keep the gamma module (same RNG use) but never update it from zero.
+    projector_gamma_frozen: bool = False
     support_head: bool = False                 # training-only document classifier
     support_head_input: str = "hidden"          # hidden: u_i; output: LN(mean(E_i))
 
@@ -374,6 +376,8 @@ class Config:
             raise ValueError("support loss requires an enabled support head")
         if self.readout.projector_fusion != "none" and self.readout.kind != "shared_projector":
             raise ValueError("projector_fusion requires shared_projector")
+        if self.readout.projector_gamma_frozen and self.readout.projector_fusion == "none":
+            raise ValueError("projector_gamma_frozen needs an additive/film gamma module")
         if self.readout.kind in {"joint_projector", "shared_projector"}:
             if ((self.data.max_docs is not None and self.data.max_docs < 1)
                     or (self.readout.kind == "joint_projector" and self.data.max_docs is None)
@@ -415,7 +419,7 @@ class Config:
                     f"{r.projector_conditioning} hidden={r.projector_hidden} "
                     f"attn={r.projector_attention_dim}/{r.projector_heads} "
                     f"cross_document={r.projector_cross_document} K_cap={self.data.max_docs} "
-                    f"fusion={r.projector_fusion} "
+                    f"fusion={r.projector_fusion}{'(frozen)' if r.projector_gamma_frozen else ''} "
                     f"support_head={r.support_head}/{r.support_head_input} "
                     f"support_weight={self.train.support_loss_weight} "
                     f"B=all_cached query={self.query_encoder.kind} "
@@ -492,7 +496,8 @@ def arm_label(cfg: Config) -> str:
         return (label + ("X" if r.projector_cross_document else "")
                 + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else "")
                 + ("E" if r.support_head and r.support_head_input == "output" else "")
-                + ({"none": "", "additive": "+AddG", "film": "+FiLM"}[r.projector_fusion]))
+                + ("+G0" if r.projector_gamma_frozen else
+                   {"none": "", "additive": "+AddG", "film": "+FiLM"}[r.projector_fusion]))
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":

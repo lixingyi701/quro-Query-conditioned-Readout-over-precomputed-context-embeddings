@@ -558,6 +558,17 @@ class QuROModel(nn.Module):
         # silently reused when the encoder is skipped.
         if hasattr(self.query_encoder, "last_pooled"):
             self.query_encoder.last_pooled = None
+        # Gamma intervention (evaluation only): encode the other question first so
+        # the pooled state left behind is still the readout's own question.
+        gamma_kwargs = {}
+        if "gamma_query_ids" in batch:
+            gamma_kwargs = {"gamma_query_emb": self.encode_query(batch["gamma_query_ids"],
+                                                                 batch["gamma_query_mask"]),
+                            "gamma_query_mask": batch["gamma_query_mask"][:, :self.cfg.data.max_query_len]}
+        if batch.get("gamma_zero"):
+            gamma_kwargs["gamma_zero"] = True
+        if gamma_kwargs and not isinstance(self.readout, SharedDocumentProjector):
+            raise ValueError("gamma interventions are defined only for the shared projector")
         query_emb = (self.encode_query(batch["query_ids"], batch["query_mask"])
                      if needs_query else None)
         if isinstance(self.readout, SharedDocumentProjector):
@@ -575,6 +586,7 @@ class QuROModel(nn.Module):
         kwargs = {}
         if isinstance(self.readout, SharedDocumentProjector):
             kwargs["return_support"] = return_support
+            kwargs.update(gamma_kwargs)
         if isinstance(self.readout, SimilarityTopBReadout) or self.uses_cosine_prior:
             kwargs["query_vector"] = self.query_vector(batch)
         if output_mode is not None:

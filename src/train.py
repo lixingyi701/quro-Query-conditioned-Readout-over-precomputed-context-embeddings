@@ -38,7 +38,8 @@ from src import metrics
 from src.cache import LatentCache
 from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
 from src.distill import TeacherCache
-from src.fusion_metrics import add_fusion_stats, fusion_metrics
+from src.fusion_metrics import (add_fusion_stats, fusion_metrics, paired_change_metrics,
+                                paired_change_stats)
 from src.model import build_model
 from src.support import support_targets, support_scores
 
@@ -118,6 +119,10 @@ def build_args():
     ap.add_argument("--projector_cross_document", action="store_true")
     ap.add_argument("--projector_fusion", choices=["none", "additive", "film"], default=None,
                     help="none: legacy SQ; additive/film: matched zero-initialised gamma branch")
+    ap.add_argument("--projector_gamma_frozen", action="store_true",
+                    help="keep the gamma module (same RNG use) but never update it from zero")
+    ap.add_argument("--gamma_control", action="store_true",
+                    help="also evaluate gamma=0 and gamma from a neighbour's question (b kept)")
     ap.add_argument("--support_head", action="store_true",
                     help="attach the same small head in both continuation arms")
     ap.add_argument("--support_head_input", choices=["hidden", "output"], default=None,
@@ -234,6 +239,11 @@ def apply_overrides(cfg, args):
         cfg.readout.projector_conditioning = args.projector_conditioning
     if args.projector_cross_document:
         cfg.readout.projector_cross_document = True
+    if args.projector_gamma_frozen:
+        cfg.readout.projector_gamma_frozen = True
+    if args.gamma_control and (cfg.readout.kind != "shared_projector"
+                               or cfg.readout.projector_fusion == "none"):
+        raise ValueError("--gamma_control needs a shared projector with additive/film fusion")
     if args.support_head or cfg.train.support_loss_weight > 0:
         cfg.readout.support_head = True
     if args.query_encoder_kind:
@@ -289,8 +299,21 @@ def apply_overrides(cfg, args):
     return cfg.revalidate()
 
 
+def drop_frozen_gamma_gradients(readout):
+    """Frozen-gamma control: clear gamma gradients before clipping and the step.
+
+    The module stays trainable so it is built (and consumes RNG) exactly as in the
+    AddG/FiLM arms and is saved in checkpoints; with grad None, clipping ignores it
+    and AdamW skips it, so weights and optimizer state never leave zero.
+    """
+    for parameter in readout.gamma_proj.parameters():
+        parameter.grad = None
+    if any(bool(p.detach().ne(0).any()) for p in readout.gamma_proj.parameters()):
+        raise RuntimeError("frozen gamma control has nonzero gamma weights")
+
+
 def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
-                  doc_control=False, corpus=None):
+                  doc_control=False, corpus=None, gamma_control=False):
     train_set = QuRODataset(cfg.data.train_file, tokenizer, cfg.data,
                             query_tokenizer=query_tokenizer)
     # Loading is not free at scale: one batch pulls B*K*m*h*2 bytes out of the
@@ -310,16 +333,20 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
         # to the decoder being asked something else.  "mismatch-q-both" is the old
         # joint shift, kept for comparability with the historical runs
         # (docs/HANDOFF.md §3 W4).
-        variants = [(name, 0, 0, 0)]
+        variants = [(name, 0, 0, 0, {})]
         if query_control:
-            variants.append((name + "/mismatch-q", 1, 0, 0))
-            variants.append((name + "/mismatch-q-both", 1, 1, 0))
+            variants.append((name + "/mismatch-q", 1, 0, 0, {}))
+            variants.append((name + "/mismatch-q-both", 1, 1, 0, {}))
         if doc_control:
-            variants.append((name + "/mismatch-doc", 0, 0, 1))
-        for variant, rq_shift, dq_shift, d_shift in variants:
+            variants.append((name + "/mismatch-doc", 0, 0, 1, {}))
+        if gamma_control:
+            # Only gamma changes; h and b keep the right question, and so does the decoder.
+            variants.append((name + "/gamma-zero", 0, 0, 0, {"gamma_zero": True}))
+            variants.append((name + "/gamma-swap", 0, 0, 0, {"gamma_query_shift": 1}))
+        for variant, rq_shift, dq_shift, d_shift, gamma in variants:
             dataset = QuRODataset(path, tokenizer, cfg.data, query_tokenizer=query_tokenizer,
                                   readout_query_shift=rq_shift, decoder_query_shift=dq_shift,
-                                  document_shift=d_shift,
+                                  document_shift=d_shift, **gamma,
                                   limit=cfg.train.eval_max_samples, corpus=corpus)
             evals[variant] = DataLoader(dataset, batch_size=cfg.train.eval_batch_size,
                                         shuffle=False, collate_fn=collator)
@@ -332,7 +359,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     rows, attention, source_tokens, readout_tokens = [], [], 0, 0
     prompt_tokens = 0
     truncated_queries = 0
-    fusion_totals = {}
+    fusion_totals, change_totals = {}, {}
     for batch in loader:
         batch = move_to_device(batch, device)
         truncated_queries += sum(batch.get("query_truncated", []))
@@ -340,6 +367,16 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
         result = model.readout_cached(batch, budget=budget,
                                       return_attn=bool(dump_attn_path), return_support=True)
         add_fusion_stats(fusion_totals, result["aux"].get("fusion_stats", {}))
+        if "reference_query_ids" in batch:
+            # The same rows through the unmodified readout: paired gamma/E change.
+            reference = {key: value for key, value in batch.items()
+                         if key not in {"gamma_query_ids", "gamma_query_mask", "gamma_zero"}}
+            reference["query_ids"] = batch["reference_query_ids"]
+            reference["query_mask"] = batch["reference_query_mask"]
+            reference_aux = model.readout_cached(reference, budget=budget)["aux"]
+            if "delta" in reference_aux:
+                add_fusion_stats(change_totals, paired_change_stats(
+                    result["aux"], reference_aux, batch["cached_latents"], batch["document_mask"]))
         # Count the slots the prompt really carries: AG has none and RG none
         # either, so xi_eff stays meaningful across every row of the table.
         # What the decoder actually prefills, counted through the same code path
@@ -377,6 +414,10 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
             # record both rather than only the row's original one.
             if i < len(decoder_queries) and decoder_queries[i] != item["query"]:
                 row["decoder_query"] = decoder_queries[i]
+            if "gamma_queries" in batch:
+                row["gamma_query"] = batch["gamma_queries"][i]
+            if batch.get("gamma_zero"):
+                row["gamma_zero"] = True
             if i < len(readout_queries) and readout_queries[i] != item["query"]:
                 row["readout_query"] = readout_queries[i]
                 # A swapped question that shares this row's answer is not a control.
@@ -388,6 +429,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
         torch.save(attention, dump_attn_path)
     aggregate = metrics.aggregate(rows)
     aggregate.update(fusion_metrics(fusion_totals))
+    aggregate.update(paired_change_metrics(change_totals))
     # Always carry the "ignore the input and answer the same thing every time"
     # floor alongside the score, so a number can never be read without it.
     floor = metrics.constant_baseline([r["golds"] for r in rows])
@@ -466,6 +508,7 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
                              if cfg.readout.kind == "shared_projector" else None),
         "projector_fusion": (cfg.readout.projector_fusion
                              if cfg.readout.kind == "shared_projector" else None),
+        "projector_gamma_frozen": cfg.readout.projector_gamma_frozen,
         "support_head": cfg.readout.support_head,
         "support_head_input": cfg.readout.support_head_input,
         "support_loss_weight": cfg.train.support_loss_weight,
@@ -567,7 +610,7 @@ def main():
         support_policy=cfg.train.support_visibility_policy if cfg.readout.support_head else None)
     train_set, train_loader, eval_loaders = build_loaders(
         cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
-        args.doc_control, corpus)
+        args.doc_control, corpus, gamma_control=args.gamma_control)
     print(f"[data] train={len(train_set)} device={device}")
     if cfg.train.support_loss_weight and not args.eval_only:
         active, labelled = 0, 0
@@ -748,6 +791,8 @@ def main():
                 for key in totals:
                     if key in output:
                         totals[key] += float(output[key].detach()) / cfg.train.grad_accum
+            if cfg.readout.projector_gamma_frozen:
+                drop_frozen_gamma_gradients(model.readout)
             grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
             optimizer.step()
             scheduler.step()

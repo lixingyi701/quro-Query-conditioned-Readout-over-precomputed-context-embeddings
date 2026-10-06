@@ -177,22 +177,9 @@ class SharedDocumentProjector(nn.Module):
         pe[:, :, 1::2] = angle[:, :, :width // 2].cos()
         return pe
 
-    def forward(self, doc_latents, document_mask, query_emb=None, query_mask=None,
-                budget=None, return_attn=False, return_support=False):
-        if budget is not None:
-            raise ValueError("shared_projector always preserves all memories; leave budget unset")
-        if doc_latents.ndim != 4:
-            raise ValueError("document latents must have shape (B, K, m, h)")
-        b, k, m, h = doc_latents.shape
-        if k < 1 or (m, h) != (self.memories_per_document, self.hidden_size):
-            raise ValueError("cache memory count/hidden width does not match shared projector")
-        if tuple(document_mask.shape) != (b, k):
-            raise ValueError("document mask does not match cached latents")
-        dm = document_mask.bool()
-        if not bool(dm.any(1).all()):
-            raise ValueError("each query needs at least one valid document")
-        memory = torch.where(dm[:, :, None, None], doc_latents.detach().float(), 0.0)
-        z = self.memory_norm(memory)
+    def _query_context(self, z, dm, query_emb, query_mask, return_attn=False):
+        """Memory-to-question readout b = context_proj(LN c); also used for gamma-only swaps."""
+        b, k, m, _ = z.shape
         if self.needs_query:
             if (query_emb is None or query_emb.ndim != 3
                     or query_emb.size(0) != b or query_emb.size(2) != self.query_dim):
@@ -237,12 +224,41 @@ class SharedDocumentProjector(nn.Module):
         # handling near-zero vectors; it is not an exact constant-norm promise.
         context = self.context_norm(context)
         context = torch.where(dm[:, :, None, None], context, 0.0)
+        return self.context_proj(context.flatten(2)), attention
+
+    def forward(self, doc_latents, document_mask, query_emb=None, query_mask=None,
+                budget=None, return_attn=False, return_support=False,
+                gamma_query_emb=None, gamma_query_mask=None, gamma_zero=False):
+        if budget is not None:
+            raise ValueError("shared_projector always preserves all memories; leave budget unset")
+        if doc_latents.ndim != 4:
+            raise ValueError("document latents must have shape (B, K, m, h)")
+        b, k, m, h = doc_latents.shape
+        if k < 1 or (m, h) != (self.memories_per_document, self.hidden_size):
+            raise ValueError("cache memory count/hidden width does not match shared projector")
+        if tuple(document_mask.shape) != (b, k):
+            raise ValueError("document mask does not match cached latents")
+        dm = document_mask.bool()
+        if not bool(dm.any(1).all()):
+            raise ValueError("each query needs at least one valid document")
+        memory = torch.where(dm[:, :, None, None], doc_latents.detach().float(), 0.0)
+        z = self.memory_norm(memory)
+        b_query, attention = self._query_context(z, dm, query_emb, query_mask, return_attn)
+        # Intervention-only path: gamma may read a different question while h and
+        # b stay those of the correct one. Training never passes these arguments.
+        if (gamma_query_emb is not None or gamma_zero) and self.gamma_proj is None:
+            raise ValueError("gamma interventions require additive/film fusion")
+        if gamma_query_emb is not None and gamma_zero:
+            raise ValueError("choose either a zero gamma or a swapped gamma question")
+        b_gamma = (b_query if gamma_query_emb is None else
+                   self._query_context(z, dm, gamma_query_emb, gamma_query_mask)[0])
         h_doc = self.memory_proj(z.flatten(2))  # includes the legacy memory bias
-        b_query = self.context_proj(context.flatten(2))  # no bias
         gamma = product = update = None
         preactivation = h_doc + b_query
         if self.gamma_proj is not None:
-            gamma = torch.tanh(self.gamma_proj(self.fusion_norm(b_query)))
+            gamma = torch.tanh(self.gamma_proj(self.fusion_norm(b_gamma)))
+            if gamma_zero:
+                gamma = torch.zeros_like(gamma)
             product = gamma * h_doc
             update = product if self.fusion == "film" else gamma
             preactivation = preactivation + update
@@ -278,7 +294,7 @@ class SharedDocumentProjector(nn.Module):
                             "update_sum_sq": squared_sum(update)}
         return output.reshape(b, k*m, h), {
             "attention": None, "query_attention": attention, "support_logits": support_logits,
-            "fusion_stats": fusion_stats,
+            "fusion_stats": fusion_stats, "gamma": gamma, "delta": delta,
             "token_mask": token_mask, "latent_mask": token_mask,
             "output_mode": "full", "delta_ms": delta.square().sum() / denom,
             "pooled_ms": memory.square().sum() / denom}

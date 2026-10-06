@@ -113,7 +113,8 @@ class QuRODataset(Dataset):
 
     def __init__(self, path, tokenizer, data_cfg, query_tokenizer=None,
                  query_shift=0, document_shift=0, limit=None, corpus=None,
-                 readout_query_shift=None, decoder_query_shift=None):
+                 readout_query_shift=None, decoder_query_shift=None,
+                 gamma_query_shift=None, gamma_zero=False):
         rows = read_jsonl(path)
         if limit is not None:
             rows = rows[:limit]
@@ -128,6 +129,12 @@ class QuRODataset(Dataset):
         self.decoder_query_shift = int(query_shift if decoder_query_shift is None
                                        else decoder_query_shift)
         self.document_shift = int(document_shift)
+        # Gamma interventions keep h and b on the readout question and change only
+        # gamma: either zero it, or compute it from a neighbour's question.
+        if gamma_zero and gamma_query_shift is not None:
+            raise ValueError("choose either a zero gamma or a swapped gamma question")
+        self.gamma_query_shift = None if gamma_query_shift is None else int(gamma_query_shift)
+        self.gamma_zero = bool(gamma_zero)
         # Only the uncompressed RG baseline reads raw text; the compressed path
         # must never see it, or the cacheability claim would be untested.
         self.corpus = corpus or {}
@@ -178,7 +185,26 @@ class QuRODataset(Dataset):
             "target_ids": target_ids,
             "budget": row.get("budget"),
             "raw": row,
+            **self._intervention_fields(index, row),
         }
+
+    def _intervention_fields(self, index, row):
+        """Extra readout inputs for gamma controls, plus the reference question.
+
+        Whenever the readout's input is intervened on, the row's own question is
+        carried as ``reference_query_ids`` so evaluation can measure the paired
+        change in gamma and E against the unmodified readout.
+        """
+        fields = {}
+        if self.gamma_query_shift is not None:
+            other = self.rows[(index + self.gamma_query_shift) % len(self.rows)]
+            fields["gamma_query"] = other["query"]
+            fields["gamma_query_ids"] = encode_text(self.query_tok, other["query"])[: self.cfg.max_query_len]
+        if self.gamma_zero:
+            fields["gamma_zero"] = True
+        if fields or self.readout_query_shift:
+            fields["reference_query_ids"] = encode_text(self.query_tok, row["query"])[: self.cfg.max_query_len]
+        return fields
 
 
 def _pad_2d(sequences, pad_id):
@@ -255,6 +281,20 @@ class QuROCollator:
                 visibility.append(vs)
             out.update(support_labels=labels, support_label_mask=label_mask & document_mask,
                        support_loss_mask=loss_mask & document_mask, support_visible=visibility)
+        for key in ("gamma_query_ids", "reference_query_ids"):
+            present = [x for x in batch if key in x]
+            if present and len(present) != len(batch):
+                raise ValueError(f"{key} must be present for every row in a batch or none")
+            if present:
+                ids, mask = _pad_2d([x[key] for x in batch], self.query_pad_id)
+                out[key], out[key.replace("_ids", "_mask")] = ids, mask
+        if "gamma_query_ids" in out:
+            out["gamma_queries"] = [x["gamma_query"] for x in batch]
+        gamma_zero = {bool(x.get("gamma_zero")) for x in batch}
+        if len(gamma_zero) != 1:
+            raise ValueError("gamma_zero must agree across a batch")
+        if gamma_zero.pop():
+            out["gamma_zero"] = True
         budgets = [x.get("budget") for x in batch]
         if any(v is not None for v in budgets) and not all(v is not None for v in budgets):
             raise ValueError("budget labels must be present for every row in a batch or none")

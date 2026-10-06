@@ -201,3 +201,48 @@ git diff --check
 checkpoint roundtrip/resume/旧版 warm start/损坏文件拒绝、padding/可变 K 和
 query 长度/文档置换、RMS 汇总、真实 trainer 两步 smoke、配对分析和无依赖 CLI。
 这些是接口核验，不是发布版 7B 的 QA 实验；本地没有启动服务器训练。
+
+## 后续：γ 冻结对照与无需重训的 γ 干预（2026-10-06）
+
+首轮结果（[QUERY_MODULATED_FUSION_RESULTS.md](QUERY_MODULATED_FUSION_RESULTS.md)）中，
+AddG 和 FiLM 相对 HeadE 都约 +0.9 F1，但数据顺序不同，不能归因于 γ。本节只做两件事，
+不加新结构。
+
+**1. γ 冻结对照（G0）。** `--projector_gamma_frozen` 保留 γ 模块（同样的随机数消耗，
+所以训练样本顺序与 AddG/FiLM 完全一致），但每步在梯度裁剪前把 γ 的梯度置为
+None：裁剪忽略它，AdamW 跳过它，权重与优化器状态始终为零；若权重偏离零会直接
+报错。其余设置与 AddG 相同（λ=0、1000 步、从 SQ last 开始），臂名 `SQ+HeadE+G0`。
+γ≡0 时 additive 与 film 的前向完全相同，所以只需一个对照臂。
+
+注意：AddG/FiLM 的梯度总范数包含 γ 的梯度，G0 不包含，所以三臂在裁剪系数上有
+细微差别；这是"不训练 γ"本身的一部分，不另做处理。
+
+- AddG−G0、FiLM−G0 都为正：收益来自新增的条件非线性路径，而非乘性本身。
+- 都不为正：共有的约 0.9 点来自数据顺序等噪声，停止这一版 γ 扩展。
+
+**2. γ 干预（eval-only，`--gamma_control`）。** 对已训练的 AddG/FiLM last checkpoint：
+
+| 变体 | γ 的来源 | h、b、decoder 的问题 |
+|---|---|---|
+| normal | 正确问题 | 正确问题 |
+| `gamma-zero` | γ=0 | 正确问题 |
+| `gamma-swap` | 下一条样本的问题（与 mismatch-q 同一错位） | 正确问题 |
+| `mismatch-q`（已有） | 错问题 | h 不变；b、γ 都来自错问题；decoder 正确 |
+
+每个干预变体都同时用原问题跑一遍未干预的读出，记录配对变化（按有效文档汇总平方和，
+不平均各 batch 的比值）：`change_gamma_rel = ‖γ'−γ‖/‖γ‖`、`change_gamma_cosine`
+（逐文档 cos 的平均）、`change_e_over_delta_ref = ‖E'−E‖/‖Δ‖`、`change_e_over_memory
+= ‖E'−E‖/‖Z‖`。参照 γ 为零时比值记为 null。
+
+```bash
+R=/data02/quro/runs/query_fusion_v1
+python scripts/analyze_gamma_intervention.py \
+  --control G0=$R/gamma_frozen --arm AddG=$R/additive --arm FiLM=$R/film \
+  --reference HeadE=/data02/quro/runs/support_output_v1/sq_ce \
+  --intervention AddG=$R/intervention/additive --intervention FiLM=$R/intervention/film \
+  --dev /data02/quro/data/hotpot/dev.jsonl --output_json $R/gamma_control_dev.json
+```
+
+主判据是 AddG−G0 与 FiLM−G0 的 QA 配对差；干预结果用来定位 γ 路径在已训练模型里
+的作用（normal−gamma-zero 是 γ 的功能贡献，normal−gamma-swap 是 γ 对问题的依赖），
+不能替代 QA 收益。eval-only 的 normal 结果应与训练时的最终评估逐条一致，作为确定性检查。
