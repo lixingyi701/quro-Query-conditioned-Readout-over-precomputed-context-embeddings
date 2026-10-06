@@ -109,7 +109,7 @@ class SharedDocumentProjector(nn.Module):
     def __init__(self, hidden_size, query_dim, memories_per_document, hidden_dim=512,
                  attention_dim=256, num_heads=8, conditioning="cross_attention",
                  query_mode="conditioned", cross_document=False, query_position=False,
-                 support_head=False, support_head_input="hidden"):
+                 support_head=False, support_head_input="hidden", fusion="none"):
         super().__init__()
         if min(hidden_size, query_dim, memories_per_document, hidden_dim,
                attention_dim, num_heads) < 1:
@@ -122,6 +122,8 @@ class SharedDocumentProjector(nn.Module):
             raise ValueError(f"unknown projector query mode: {query_mode}")
         if support_head_input not in {"hidden", "output"}:
             raise ValueError(f"unknown support head input: {support_head_input}")
+        if fusion not in {"none", "additive", "film"}:
+            raise ValueError(f"unknown projector fusion: {fusion}")
         self.hidden_size, self.query_dim = hidden_size, query_dim
         self.memories_per_document, self.hidden_dim = memories_per_document, hidden_dim
         self.attention_dim, self.num_heads = attention_dim, num_heads
@@ -154,6 +156,14 @@ class SharedDocumentProjector(nn.Module):
         support_dim = hidden_size if support_head_input == "output" else hidden_dim
         self.support_norm = nn.LayerNorm(support_dim, elementwise_affine=False)
         self.support_classifier = nn.Linear(support_dim, 1) if support_head else None
+        # Construct AFTER every legacy module, including the support head, so
+        # their seed-dependent initialisation stays identical to SQ/DocE.
+        self.fusion = fusion
+        self.fusion_norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.gamma_proj = nn.Linear(hidden_dim, hidden_dim) if fusion != "none" else None
+        if self.gamma_proj is not None:
+            nn.init.zeros_(self.gamma_proj.weight)
+            nn.init.zeros_(self.gamma_proj.bias)
 
     @staticmethod
     def positional_features(mask, width, dtype):
@@ -227,7 +237,16 @@ class SharedDocumentProjector(nn.Module):
         # handling near-zero vectors; it is not an exact constant-norm promise.
         context = self.context_norm(context)
         context = torch.where(dm[:, :, None, None], context, 0.0)
-        u = F.gelu(self.memory_proj(z.flatten(2)) + self.context_proj(context.flatten(2)))
+        h_doc = self.memory_proj(z.flatten(2))  # includes the legacy memory bias
+        b_query = self.context_proj(context.flatten(2))  # no bias
+        gamma = product = update = None
+        preactivation = h_doc + b_query
+        if self.gamma_proj is not None:
+            gamma = torch.tanh(self.gamma_proj(self.fusion_norm(b_query)))
+            product = gamma * h_doc
+            update = product if self.fusion == "film" else gamma
+            preactivation = preactivation + update
+        u = F.gelu(preactivation)
         if self.cross_document:
             un = self.document_norm(u)
             mixed, _ = self.document_attention(un, un, un, key_padding_mask=~dm,
@@ -245,8 +264,21 @@ class SharedDocumentProjector(nn.Module):
             support_logits = torch.where(dm, support_logits, 0.0)
         token_mask = dm[:, :, None].expand(b, k, m).reshape(b, k*m)
         denom = token_mask.sum().clamp_min(1) * h
+        # Detached sufficient statistics, not a graph-retaining activation dump.
+        # Pool sum-of-squares/counts across microbatches; never average RMSs.
+        with torch.no_grad():
+            def squared_sum(value):
+                if value is None:
+                    return h_doc.new_zeros(())
+                return value.detach().masked_fill(~dm[:, :, None], 0.0).square().sum()
+
+            fusion_stats = {"elements": dm.sum() * self.hidden_dim,
+                            "h_sum_sq": squared_sum(h_doc), "b_sum_sq": squared_sum(b_query),
+                            "gamma_sum_sq": squared_sum(gamma), "product_sum_sq": squared_sum(product),
+                            "update_sum_sq": squared_sum(update)}
         return output.reshape(b, k*m, h), {
             "attention": None, "query_attention": attention, "support_logits": support_logits,
+            "fusion_stats": fusion_stats,
             "token_mask": token_mask, "latent_mask": token_mask,
             "output_mode": "full", "delta_ms": delta.square().sum() / denom,
             "pooled_ms": memory.square().sum() / denom}

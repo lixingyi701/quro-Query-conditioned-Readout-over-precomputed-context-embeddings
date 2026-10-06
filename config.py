@@ -97,6 +97,8 @@ class ReadoutConfig:
     projector_attention_dim: int = 256
     projector_heads: int = 8
     projector_cross_document: bool = False
+    # none: legacy SQ; additive/film: matched zero-initialised gamma branches.
+    projector_fusion: str = "none"
     support_head: bool = False                 # training-only document classifier
     support_head_input: str = "hidden"          # hidden: u_i; output: LN(mean(E_i))
 
@@ -112,6 +114,8 @@ class ReadoutConfig:
             raise ValueError(f"unknown projector_query_mode: {self.projector_query_mode}")
         if self.projector_conditioning not in {"cross_attention", "last"}:
             raise ValueError(f"unknown projector_conditioning: {self.projector_conditioning}")
+        if self.projector_fusion not in {"none", "additive", "film"}:
+            raise ValueError(f"unknown projector_fusion: {self.projector_fusion}")
         if self.support_head_input not in {"hidden", "output"}:
             raise ValueError(f"unknown support_head_input: {self.support_head_input}")
         if min(self.projector_attention_dim, self.projector_heads) < 1:
@@ -368,6 +372,8 @@ class Config:
             raise ValueError("support head requires shared_projector")
         if self.train.support_loss_weight and not self.readout.support_head:
             raise ValueError("support loss requires an enabled support head")
+        if self.readout.projector_fusion != "none" and self.readout.kind != "shared_projector":
+            raise ValueError("projector_fusion requires shared_projector")
         if self.readout.kind in {"joint_projector", "shared_projector"}:
             if ((self.data.max_docs is not None and self.data.max_docs < 1)
                     or (self.readout.kind == "joint_projector" and self.data.max_docs is None)
@@ -409,6 +415,7 @@ class Config:
                     f"{r.projector_conditioning} hidden={r.projector_hidden} "
                     f"attn={r.projector_attention_dim}/{r.projector_heads} "
                     f"cross_document={r.projector_cross_document} K_cap={self.data.max_docs} "
+                    f"fusion={r.projector_fusion} "
                     f"support_head={r.support_head}/{r.support_head_input} "
                     f"support_weight={self.train.support_loss_weight} "
                     f"B=all_cached query={self.query_encoder.kind} "
@@ -484,7 +491,8 @@ def arm_label(cfg: Config) -> str:
                  else "SL" if r.projector_conditioning == "last" else "SQ")
         return (label + ("X" if r.projector_cross_document else "")
                 + ("+Doc" if cfg.train.support_loss_weight else "+Head" if r.support_head else "")
-                + ("E" if r.support_head and r.support_head_input == "output" else ""))
+                + ("E" if r.support_head and r.support_head_input == "output" else "")
+                + ({"none": "", "additive": "+AddG", "film": "+FiLM"}[r.projector_fusion]))
     agnostic = r.output_query_mode in ("agnostic", "agnostic_matched")
     label = ("A" if agnostic else "C") + ("1" if r.cosine_prior else "0")
     if r.output_query_mode == "agnostic_matched":

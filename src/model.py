@@ -374,7 +374,7 @@ class QuROModel(nn.Module):
                 r.projector_attention_dim, r.projector_heads, r.projector_conditioning,
                 r.projector_query_mode, r.projector_cross_document,
                 query_position=cfg.query_encoder.kind == "word_embedding", support_head=r.support_head,
-                support_head_input=r.support_head_input)
+                support_head_input=r.support_head_input, fusion=r.projector_fusion)
         else:
             raise ValueError(f"unknown readout kind: {r.kind}")
 
@@ -711,6 +711,8 @@ class QuROModel(nn.Module):
         total = self.cfg.train.beta_qa * qa
         output = {"qa_loss": qa.detach(),
                   "mean_budget": result["budgets"].float().mean().detach()}
+        if "fusion_stats" in result["aux"]:
+            output["fusion_stats"] = result["aux"]["fusion_stats"]
         if self.cfg.train.support_loss_weight > 0:
             if "support_labels" not in batch or "support_loss_mask" not in batch:
                 raise ValueError("support supervision requires collated support targets")
@@ -855,13 +857,14 @@ class QuROModel(nn.Module):
                         "query_position"))
         layout = {name: getattr(self.readout, name) for name in fields}
         if isinstance(self.readout, SharedDocumentProjector):
+            layout["fusion"] = self.readout.fusion
             layout["support_head"] = self.readout.support_classifier is not None
             layout["support_head_input"] = (self.readout.support_head_input
                                              if layout["support_head"] else None)
         return layout
 
     def load(self, path, strict=False, optimizer=None, scheduler=None,
-             allow_new_support_head=False):
+             allow_new_support_head=False, allow_new_projector_fusion=False):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             saved = ckpt.get("config", {})
@@ -875,7 +878,21 @@ class QuROModel(nn.Module):
             layout = self._projector_layout()
             saved_layout = dict(ckpt.get("projector_layout", {}))
             new_head = False
+            new_fusion = False
             if isinstance(self.readout, SharedDocumentProjector):
+                saved_layout.setdefault("fusion", "none")
+                saved_fusion = saved.get("readout", {}).get("projector_fusion", "none")
+                if saved_fusion != saved_layout["fusion"]:
+                    raise ValueError("checkpoint has inconsistent projector fusion metadata")
+                gamma_keys = {"readout.gamma_proj.weight", "readout.gamma_proj.bias"}
+                if saved_layout["fusion"] == "none" and gamma_keys & ckpt["state_dict"].keys():
+                    raise ValueError("legacy projector checkpoint unexpectedly contains gamma weights")
+                new_fusion = (allow_new_projector_fusion and layout["fusion"] != "none"
+                              and saved_layout["fusion"] == "none")
+                if new_fusion:
+                    if optimizer is not None or scheduler is not None:
+                        raise ValueError("new projector fusion requires weights-only warm start")
+                    saved_layout["fusion"] = layout["fusion"]
                 saved_layout.setdefault("support_head", False)
                 saved_layout.setdefault("support_head_input",
                                         "hidden" if saved_layout["support_head"] else None)
@@ -891,8 +908,15 @@ class QuROModel(nn.Module):
             expected = {f"readout.{name}" for name, _ in self.readout.named_parameters()}
             if new_head:
                 expected -= {"readout.support_classifier.weight", "readout.support_classifier.bias"}
+            if new_fusion:
+                expected -= gamma_keys
             if not expected.issubset(ckpt["state_dict"]):
                 raise ValueError("projector checkpoint is missing trained projection weights")
+            if new_fusion:
+                # Explicitly guarantee identity even if this model object was
+                # previously trained before loading an old SQ checkpoint.
+                nn.init.zeros_(self.readout.gamma_proj.weight)
+                nn.init.zeros_(self.readout.gamma_proj.bias)
         missing, unexpected = self.load_state_dict(ckpt["state_dict"], strict=strict)
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)

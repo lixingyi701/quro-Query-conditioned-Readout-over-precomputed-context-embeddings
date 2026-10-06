@@ -31,6 +31,8 @@ continuation commands are in
 [`docs/SUPPORT_DOCUMENT_SUPERVISION.md`](docs/SUPPORT_DOCUMENT_SUPERVISION.md).
 For saved-prediction top-k diagnostics and supervision on the final projected
 embeddings, see [`docs/SUPPORT_OUTPUT_SUPERVISION.md`](docs/SUPPORT_OUTPUT_SUPERVISION.md).
+The matched additive/FiLM query-modulation implementation, launch commands and
+confirmation protocol are in [`docs/QUERY_MODULATED_FUSION.md`](docs/QUERY_MODULATED_FUSION.md).
 
 [`docs/`](docs/) holds our own design notes, plans and results;
 [`article/`](article/) holds reading notes on other people's papers;

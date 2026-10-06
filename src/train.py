@@ -38,6 +38,7 @@ from src import metrics
 from src.cache import LatentCache
 from src.data import QuROCollator, QuRODataset, load_corpus, move_to_device
 from src.distill import TeacherCache
+from src.fusion_metrics import add_fusion_stats, fusion_metrics
 from src.model import build_model
 from src.support import support_targets, support_scores
 
@@ -115,6 +116,8 @@ def build_args():
     ap.add_argument("--projector_attention_dim", type=int, default=None)
     ap.add_argument("--projector_heads", type=int, default=None)
     ap.add_argument("--projector_cross_document", action="store_true")
+    ap.add_argument("--projector_fusion", choices=["none", "additive", "film"], default=None,
+                    help="none: legacy SQ; additive/film: matched zero-initialised gamma branch")
     ap.add_argument("--support_head", action="store_true",
                     help="attach the same small head in both continuation arms")
     ap.add_argument("--support_head_input", choices=["hidden", "output"], default=None,
@@ -216,6 +219,7 @@ def apply_overrides(cfg, args):
         ("projector_attention_dim", cfg.readout), ("projector_heads", cfg.readout),
         ("support_loss_weight", cfg.train), ("support_warmup_steps", cfg.train),
         ("support_head_input", cfg.readout),
+        ("projector_fusion", cfg.readout),
         ("support_visibility_policy", cfg.train),
     ]
     for name, target in simple:
@@ -328,12 +332,14 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     rows, attention, source_tokens, readout_tokens = [], [], 0, 0
     prompt_tokens = 0
     truncated_queries = 0
+    fusion_totals = {}
     for batch in loader:
         batch = move_to_device(batch, device)
         truncated_queries += sum(batch.get("query_truncated", []))
         predictions = model.generate_answer(batch, max_new_tokens=max_new_tokens, budget=budget)
         result = model.readout_cached(batch, budget=budget,
                                       return_attn=bool(dump_attn_path), return_support=True)
+        add_fusion_stats(fusion_totals, result["aux"].get("fusion_stats", {}))
         # Count the slots the prompt really carries: AG has none and RG none
         # either, so xi_eff stays meaningful across every row of the table.
         # What the decoder actually prefills, counted through the same code path
@@ -381,6 +387,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     if attention:
         torch.save(attention, dump_attn_path)
     aggregate = metrics.aggregate(rows)
+    aggregate.update(fusion_metrics(fusion_totals))
     # Always carry the "ignore the input and answer the same thing every time"
     # floor alongside the score, so a number can never be read without it.
     floor = metrics.constant_baseline([r["golds"] for r in rows])
@@ -456,6 +463,8 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "projector_attention_dim": (cfg.readout.projector_attention_dim
                                      if cfg.readout.kind == "shared_projector" else None),
         "projector_heads": (cfg.readout.projector_heads
+                             if cfg.readout.kind == "shared_projector" else None),
+        "projector_fusion": (cfg.readout.projector_fusion
                              if cfg.readout.kind == "shared_projector" else None),
         "support_head": cfg.readout.support_head,
         "support_head_input": cfg.readout.support_head_input,
@@ -612,7 +621,8 @@ def main():
         # new run from trained weights must NOT restore them, or the freshly
         # requested learning rates are silently overwritten by the saved ones.
         if args.warm_start:
-            model.load(cfg.train.resume_from, allow_new_support_head=True)
+            model.load(cfg.train.resume_from, allow_new_support_head=True,
+                       allow_new_projector_fusion=True)
             print(f"[init] warm start from {cfg.train.resume_from}: weights only, "
                   f"fresh optimiser and schedule")
         else:
@@ -699,7 +709,8 @@ def main():
             record = {"step": done, "split": name, "val_budget": "full" if full_budget else validation_budget,
                       **{k: round(float(aggregate[k]), 4) for k in ("em", "substring", "f1")},
                       "seconds": round(time.time() - started, 1)}
-            record.update({k: v for k, v in aggregate.items() if k.startswith("support_")})
+            record.update({k: v for k, v in aggregate.items()
+                           if k.startswith(("support_", "fusion_"))})
             print(f"[val] {record}", flush=True)
             log.write(json.dumps({"validation": record}) + "\n")
             log.flush()
@@ -722,6 +733,7 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             totals = {"loss": 0.0, "qa_loss": 0.0, "mean_budget": 0.0,
                       "residual_penalty": 0.0, "kd_loss": 0.0}
+            fusion_totals = {}
             if cfg.train.support_loss_weight:
                 totals.update(support_loss=0.0, support_examples=0.0, support_weight=0.0)
             support_weight = cfg.train.support_loss_weight * min(
@@ -732,6 +744,7 @@ def main():
                                teacher=teacher, kd_weight=args.kd_weight,
                                support_weight=support_weight)
                 (output["loss"] / cfg.train.grad_accum).backward()
+                add_fusion_stats(fusion_totals, output.get("fusion_stats", {}))
                 for key in totals:
                     if key in output:
                         totals[key] += float(output[key].detach()) / cfg.train.grad_accum
@@ -746,6 +759,8 @@ def main():
                           "grad_norm": round(float(grad_norm), 3),
                           "lr": scheduler.get_last_lr()[0],
                           "seconds": round(time.time() - started, 1)}
+                record.update({k: round(v, 6) if v is not None else None
+                               for k, v in fusion_metrics(fusion_totals).items()})
                 if cfg.readout.support_head:
                     modules = {"support_head_grad_norm": model.readout.support_classifier,
                                "query_condition_grad_norm": model.readout.context_proj,
@@ -754,6 +769,12 @@ def main():
                         gradients = [p.grad.detach() for p in module.parameters() if p.grad is not None]
                         record[key] = (round(float(torch.stack([g.float().norm() for g in gradients]).norm()), 6)
                                        if gradients else None)
+                gamma_module = getattr(model.readout, "gamma_proj", None)
+                if gamma_module is not None:
+                    gradients = [p.grad.detach() for p in gamma_module.parameters() if p.grad is not None]
+                    record["gamma_projection_grad_norm"] = (
+                        round(float(torch.stack([g.float().norm() for g in gradients]).norm()), 6)
+                        if gradients else None)
                 print(record, flush=True)
                 log.write(json.dumps(record) + "\n")
                 log.flush()

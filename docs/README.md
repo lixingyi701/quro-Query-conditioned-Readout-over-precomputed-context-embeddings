@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`SUPPORT_OUTPUT_SUPERVISION_RESULTS.md`](SUPPORT_OUTPUT_SUPERVISION_RESULTS.md) | **输出端支持监督结果**：QA 零收益（−0.01 F1），最终 E 上的头更不用问题；离线 top-k@6 覆盖 87% gold |
+| [`QUERY_MODULATED_FUSION.md`](QUERY_MODULATED_FUSION.md) | 问题条件文档调制：等容量 AddG/FiLM、恒等起点、日志与配对确认协议 |
 | [`SUPPORT_OUTPUT_SUPERVISION.md`](SUPPORT_OUTPUT_SUPERVISION.md) | 离线 Recall/both@4/@6 与最终 E 分类监督：梯度、匹配训练和判据 |
 | [`SUPPORT_DOCUMENT_SUPERVISION.md`](SUPPORT_DOCUMENT_SUPERVISION.md) | SQ 支持文档辅助监督：实现、可见性注释、匹配继续训练与判据 |
 | [`SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md`](SUPPORT_DOCUMENT_SUPERVISION_RESULTS.md) | **支持文档监督首轮结果**：QA 零收益（+0.07 F1），辅助头学会分文档但不用问题 |
