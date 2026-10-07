@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`PROJECTOR_INPUT_ATTRIBUTION.md`](PROJECTOR_INPUT_ATTRIBUTION.md) | eval-only 投影器输入归因：原始/范数/方向/完整四臂、真实 decoder 残差 hook、答案内容与 EOS 分离、配对分析 |
+| [`PROJECTOR_INPUT_ATTRIBUTION_RESULTS.md`](PROJECTOR_INPUT_ATTRIBUTION_RESULTS.md) | **四臂归因实验结果**：约 47 F1pp 收益几乎完全来自方向，范数无贡献；SQ−S0 +0.37 F1 集中在 comparison 题，bridge 题无增益 |
 | [`QUERY_PROJECTOR_ABLATION.md`](QUERY_PROJECTOR_ABLATION.md) | 标准 S0 消融：移除 query 分支、同尺寸文档 MLP、初始化对齐及独立训练协议 |
 | [`QUERY_PROJECTOR_ABLATION_RESULTS.md`](QUERY_PROJECTOR_ABLATION_RESULTS.md) | **SQ−S0 主消融结果**：去掉 query 分支只少约 0.4 F1（两 seed，全量 test），集中在 comparison 题，bridge 题为零 |
 | [`QUERY_MODULATED_FUSION_RESULTS.md`](QUERY_MODULATED_FUSION_RESULTS.md) | **FiLM 调制对照结果**：FiLM−AddG +0.04 F1，零收益；γ 冻结对照 G0 表明共有的 0.9 点来自样本顺序；单 seed 噪声约 0.8 F1 |
