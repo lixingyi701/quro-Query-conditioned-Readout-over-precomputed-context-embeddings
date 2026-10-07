@@ -43,6 +43,9 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as handle:
         for row in read_jsonl(args.train_file):
+            # Strip query to match adapt_row in data.py, so source_digest stays stable.
+            if "query" in row and row["query"] != row["query"].strip():
+                row = {**row, "query": row["query"].strip()}
             annotated = annotate_evidence(row, corpus, tok, manifest, retained, cache_digest)
             a = annotated["evidence_annotation"]
             counts["rows"] += 1
