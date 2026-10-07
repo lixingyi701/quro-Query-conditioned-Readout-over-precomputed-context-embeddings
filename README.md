@@ -29,6 +29,10 @@ constraints, ready-made caches, and the next experiments in priority order.
 The shared-projector support-document supervision implementation and matched
 continuation commands are in
 [`docs/SUPPORT_DOCUMENT_SUPERVISION.md`](docs/SUPPORT_DOCUMENT_SUPERVISION.md).
+The proposed query-guided evidence readout, train-only data audit, optional natural
+question pairing, pilot and three-arm commands are implemented in
+[`docs/QUERY_GUIDED_EVIDENCE_READOUT_IMPLEMENTATION.md`](docs/QUERY_GUIDED_EVIDENCE_READOUT_IMPLEMENTATION.md).
+Its QA effect is pending server experiments.
 For saved-prediction top-k diagnostics and supervision on the final projected
 embeddings, see [`docs/SUPPORT_OUTPUT_SUPERVISION.md`](docs/SUPPORT_OUTPUT_SUPERVISION.md).
 The matched additive/FiLM query-modulation implementation, launch commands and

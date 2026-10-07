@@ -31,6 +31,8 @@ class ReadoutConfig:
     # "pisco_direct"    : no selection, hand every cached latent to the decoder
     # "similarity_topb" : non-parametric top-B by cosine similarity to the query
     kind: str = "quro"
+    evidence_stage: str = "full"             # full | first_only | slotwise
+    evidence_base_trainable: bool = False    # joint-S0 pilot; frozen in initial proposal
 
     # Latents are 4096-d in Mistral space; attending at that width costs 211M
     # parameters, so the readout works in a bottleneck and bridges back out.
@@ -109,7 +111,7 @@ class ReadoutConfig:
         valid = {"agnostic", "agnostic_matched", "add", "film", "concat", "xattn"}
         if self.output_query_mode not in valid:
             raise ValueError(f"unknown output_query_mode: {self.output_query_mode}")
-        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector"}:
+        if self.kind not in {"quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector", "evidence_projector"}:
             raise ValueError(f"unknown readout kind: {self.kind}")
         if self.projector_hidden < 1:
             raise ValueError("projector_hidden must be positive")
@@ -285,6 +287,7 @@ class DataConfig:
     max_answer_len: int = 48
     max_docs: Optional[int] = None              # cap on retrieved K; None = use all
     prefer_teacher_output: bool = True
+    evidence_max_len: int = 128              # includes EOS; overlong targets are skipped, never sliced
 
     def resolved_eval_files(self) -> Dict[str, str]:
         return dict(self.eval_files) if self.eval_files else {"train": self.train_file}
@@ -352,6 +355,8 @@ class TrainConfig:
     support_loss_weight: float = 0.0
     support_warmup_steps: int = 100
     support_visibility_policy: str = "visible"  # or explicit original-label control
+    evidence_loss_weight: float = 0.0
+    s0_checkpoint: Optional[str] = None      # explicit S0->new architecture initialisation
 
 
 @dataclass
@@ -366,6 +371,26 @@ class Config:
     def revalidate(self):
         for section in (self.readout, self.query_encoder, self.generator, self.decoder):
             section.__post_init__()
+        if (not 0 <= self.train.evidence_loss_weight < float("inf")
+                or self.data.evidence_max_len < 2):
+            raise ValueError("evidence loss needs finite nonnegative weight and target cap >= 2")
+        if self.train.evidence_loss_weight and self.readout.kind != "evidence_projector":
+            raise ValueError("evidence generation requires evidence_projector")
+        if self.readout.kind == "evidence_projector":
+            if self.readout.evidence_stage not in {"full", "first_only", "slotwise"}:
+                raise ValueError("unknown evidence stage")
+            if (self.query_encoder.kind != "generator"
+                    or self.readout.projector_query_mode == "none"
+                    or self.readout.projector_cross_document
+                    or self.readout.projector_conditioning != "cross_attention"
+                    or self.readout.support_head or self.train.support_loss_weight):
+                raise ValueError("evidence readout uses contextual query tokens, within-document attention and no support head")
+            if self.readout.projector_attention_dim % self.readout.projector_heads:
+                raise ValueError("evidence attention width must be divisible by heads")
+        elif self.train.s0_checkpoint:
+            raise ValueError("s0_checkpoint is only for evidence_projector")
+        elif self.readout.evidence_base_trainable or self.readout.evidence_stage != "full":
+            raise ValueError("evidence architecture options require evidence_projector")
         if (not 0 <= self.train.support_loss_weight < float("inf")
                 or self.train.support_warmup_steps < 0):
             raise ValueError("support loss needs a finite nonnegative weight and warmup")
@@ -384,7 +409,7 @@ class Config:
                 raise ValueError("projector_query_mode=none removes the query and gamma branches; use fusion=none")
         if self.readout.projector_gamma_frozen and self.readout.projector_fusion == "none":
             raise ValueError("projector_gamma_frozen needs an additive/film gamma module")
-        if self.readout.kind in {"joint_projector", "shared_projector"}:
+        if self.readout.kind in {"joint_projector", "shared_projector", "evidence_projector"}:
             if ((self.data.max_docs is not None and self.data.max_docs < 1)
                     or (self.readout.kind == "joint_projector" and self.data.max_docs is None)
                     or self.data.max_query_len < 1):
@@ -420,6 +445,10 @@ class Config:
 
     def summary(self) -> str:
         r, g = self.readout, self.generator
+        if r.kind == "evidence_projector":
+            return (f"[cfg] evidence_projector/{r.projector_query_mode}/{r.evidence_stage} "
+                    f"joint_S0={r.evidence_base_trainable} r={r.projector_attention_dim} "
+                    f"heads={r.projector_heads} lambda={self.train.evidence_loss_weight} B=all_cached")
         if r.kind == "shared_projector":
             return (f"[cfg] readout=shared_projector/{r.projector_query_mode}/"
                     f"{r.projector_conditioning} hidden={r.projector_hidden} "
@@ -490,6 +519,11 @@ def arm_label(cfg: Config) -> str:
     file rather than only in the launch script.
     """
     r = cfg.readout
+    if r.kind == "evidence_projector":
+        return ("QER" + ("0m" if r.projector_query_mode == "agnostic_matched" else "")
+                + ("+E" if cfg.train.evidence_loss_weight else "")
+                + ("-joint" if r.evidence_base_trainable else "-frozen")
+                + ("" if r.evidence_stage == "full" else "-"+r.evidence_stage))
     if r.kind == "similarity_topb":
         return "S"
     if r.kind == "pisco_direct":
@@ -649,6 +683,13 @@ def pisco_shared_projector_config() -> Config:
     return cfg.revalidate()
 
 
+def pisco_evidence_projector_config() -> Config:
+    cfg = pisco_shared_projector_config()
+    cfg.readout.kind = "evidence_projector"
+    cfg.train.out_dir = os.path.join(paths.RUNS_DIR, "evidence-projector")
+    return cfg.revalidate()
+
+
 PRESETS = {
     "toy": toy_config,
     "pisco_smoke": pisco_smoke_config,
@@ -656,6 +697,7 @@ PRESETS = {
     "pisco_hotpot": pisco_hotpot_config,
     "pisco_joint_projector": pisco_joint_projector_config,
     "pisco_shared_projector": pisco_shared_projector_config,
+    "pisco_evidence_projector": pisco_evidence_projector_config,
 }
 
 

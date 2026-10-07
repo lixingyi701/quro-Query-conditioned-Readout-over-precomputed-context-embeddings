@@ -24,6 +24,7 @@ from torch.utils.data import Dataset
 
 from .cache import LatentCache
 from .support import manifest_digest, support_targets
+from .evidence import digest as evidence_digest, evidence_target
 
 
 def doc_id_for(text: str) -> str:
@@ -225,7 +226,7 @@ class QuROCollator:
 
     def __init__(self, cache: LatentCache, pad_id: int, query_pad_id: Optional[int] = None,
                  max_docs: Optional[int] = None, require_budget_labels: bool = False,
-                 support_policy=None):
+                 support_policy=None, evidence_tokenizer=None, evidence_max_len=128):
         if cache is None:
             raise ValueError("QuRO is cache-first: a LatentCache is required")
         self.cache = cache
@@ -235,6 +236,9 @@ class QuROCollator:
         self.require_budget_labels = bool(require_budget_labels)
         self.support_policy = support_policy
         self.support_digest = manifest_digest(cache.manifest) if support_policy else None
+        self.evidence_tokenizer = evidence_tokenizer
+        self.evidence_max_len = evidence_max_len
+        self.evidence_digest = evidence_digest(cache.manifest) if evidence_tokenizer else None
 
     def __call__(self, batch):
         query_ids, query_mask = _pad_2d([x["query_ids"] for x in batch], self.query_pad_id)
@@ -260,6 +264,25 @@ class QuROCollator:
             "source_token_counts": counts,
             "raw": [x["raw"] for x in batch],
         }
+        if self.evidence_tokenizer is not None:
+            targets, status = [], []
+            for i, item in enumerate(batch):
+                row = item["raw"]
+                aligned = (doc_ids[i] == row["retrieved_doc_ids"][:len(doc_ids[i])]
+                           and item.get("readout_query", item["query"]) == row["query"]
+                           and item["query"] == row["query"])
+                text = evidence_target(row, doc_ids[i], self.evidence_digest) if aligned else ""
+                ids = encode_text(self.evidence_tokenizer, " "+text.strip()) if text else []
+                eos = getattr(self.evidence_tokenizer, "eos_token_id", None)
+                if ids and eos is not None:
+                    ids.append(eos)
+                # Do not truncate in the middle of a multi-hop evidence target.
+                reason = "active" if ids else "empty_or_misaligned"
+                if len(ids) > self.evidence_max_len:
+                    ids, reason = [], "overlong"
+                targets.append(ids)
+                status.append(reason)
+            out.update(evidence_target_ids=targets, evidence_status=status)
         if self.support_policy:
             labels = torch.zeros_like(document_mask, dtype=torch.float)
             label_mask = torch.zeros_like(document_mask)

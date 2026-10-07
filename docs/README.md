@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`QUERY_GUIDED_EVIDENCE_READOUT_IMPLEMENTATION.md`](QUERY_GUIDED_EVIDENCE_READOUT_IMPLEMENTATION.md) | 远程评审修订：两阶段文档内证据读出、可见内容生成监督、数据审计、自然问题配对和 pilot／三臂运行协议（结果待运行） |
 | [`PROJECTOR_INPUT_ATTRIBUTION.md`](PROJECTOR_INPUT_ATTRIBUTION.md) | eval-only 投影器输入归因：原始/范数/方向/完整四臂、真实 decoder 残差 hook、答案内容与 EOS 分离、配对分析 |
 | [`QUERY_PROJECTOR_ABLATION.md`](QUERY_PROJECTOR_ABLATION.md) | 标准 S0 消融：移除 query 分支、同尺寸文档 MLP、初始化对齐及独立训练协议 |
 | [`QUERY_PROJECTOR_ABLATION_RESULTS.md`](QUERY_PROJECTOR_ABLATION_RESULTS.md) | **SQ−S0 主消融结果**：去掉 query 分支只少约 0.4 F1（两 seed，全量 test），集中在 comparison 题，bridge 题为零 |

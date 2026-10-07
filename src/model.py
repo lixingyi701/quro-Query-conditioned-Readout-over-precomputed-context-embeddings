@@ -31,6 +31,8 @@ from .prompt import (DECODER_INPUT_MODES, QUERY_SLOT_MODES, SLOTLESS_MODES,
 from .readout import QuroReadout
 from .projector import JointQueryProjector, SharedDocumentProjector
 from .support import balanced_support_loss
+from .evidence_projector import QueryGuidedEvidenceProjector
+from .evidence import EVIDENCE_INSTRUCTION
 
 
 class FrozenWordEmbeddingQueryEncoder(nn.Module):
@@ -365,6 +367,15 @@ class QuROModel(nn.Module):
             self.readout = JointQueryProjector(
                 self.d_gen, query_encoder.out_dim, cfg.data.max_docs, self.n_mem_tokens,
                 cfg.data.max_query_len, r.projector_hidden, r.projector_query_mode)
+        elif r.kind == "evidence_projector":
+            cfg.revalidate()
+            if self.cache_hidden != self.d_gen or any(p.requires_grad for p in lm.parameters()):
+                raise ValueError("evidence_projector requires native cache dimensions and fully frozen reader")
+            self.readout = QueryGuidedEvidenceProjector(
+                self.d_gen, query_encoder.out_dim, self.n_mem_tokens, r.projector_hidden,
+                r.projector_attention_dim, r.projector_heads, r.projector_query_mode,
+                r.evidence_base_trainable, r.evidence_stage)
+            self.s0_provenance = None
         elif r.kind == "shared_projector":
             cfg.revalidate()
             if self.cache_hidden != self.d_gen or any(p.requires_grad for p in lm.parameters()):
@@ -574,7 +585,7 @@ class QuROModel(nn.Module):
             raise ValueError("gamma interventions are defined only for the shared projector")
         query_emb = (self.encode_query(batch["query_ids"], batch["query_mask"])
                      if needs_query else None)
-        if isinstance(self.readout, SharedDocumentProjector):
+        if isinstance(self.readout, (SharedDocumentProjector, QueryGuidedEvidenceProjector)):
             if budget is not None:
                 raise ValueError("shared_projector uses all cached memories, without an explicit budget")
             budgets = document_mask.long().sum(1) * latents.size(2)
@@ -600,7 +611,7 @@ class QuROModel(nn.Module):
             kwargs["output_mode"] = output_mode
         soft_tokens, aux = self.readout(
             latents, document_mask, query_emb, batch.get("query_mask"),
-            budget=(None if isinstance(self.readout, SharedDocumentProjector)
+            budget=(None if isinstance(self.readout, (SharedDocumentProjector, QueryGuidedEvidenceProjector))
                     else int(budgets.max().item())), return_attn=return_attn, **kwargs)
 
         token_mask = aux.get("token_mask")
@@ -674,6 +685,30 @@ class QuROModel(nn.Module):
             result["answer_targets"] = packed["labels"][:, 1:][rows, cols]
         return output.loss, result
 
+    def evidence_loss(self, batch, result):
+        """Frozen reader, differentiable inputs; actual question never in prompt.
+
+        Reuse the SAME final soft tokens used for QA, not a gold-filtered memory.
+        Standard teacher forcing exposes previous target tokens only to the
+        causal reader, never to the projector or the prompt builder.
+        """
+        targets = batch.get("evidence_target_ids")
+        if targets is None:
+            raise ValueError("evidence generation requires collated offline targets")
+        active = [i for i, ids in enumerate(targets) if ids]
+        if not active:
+            return result["soft_tokens"].sum()*0.0, 0
+        index = torch.tensor(active, device=result["soft_tokens"].device)
+        tokens = result["soft_tokens"].index_select(0, index)
+        mask = result["soft_token_mask"].index_select(0, index)
+        prompts = [self.prompt_builders["D0"].build(EVIDENCE_INSTRUCTION, int(m.sum())) for m in mask]
+        packed = assemble_inputs(self.lm.get_input_embeddings(), prompts, tokens, mask,
+                                 target_ids=[targets[i] for i in active],
+                                 pad_token_id=self.pad_id, pad_side="right")
+        # Do NOT wrap this forward in no_grad: reader parameters are frozen,
+        # but d(loss)/d(E) must reach the new attention/output branch.
+        return self.lm(**packed).loss, len(active)
+
     def residual_penalty(self, result) -> torch.Tensor:
         """Keep the trained residual small relative to the pooled cached latents.
 
@@ -726,6 +761,11 @@ class QuROModel(nn.Module):
         total = self.cfg.train.beta_qa * qa
         output = {"qa_loss": qa.detach(),
                   "mean_budget": result["budgets"].float().mean().detach()}
+        if self.cfg.train.evidence_loss_weight:
+            evidence, count = self.evidence_loss(batch, result)
+            total = total + self.cfg.train.evidence_loss_weight * evidence
+            output.update(evidence_loss=evidence.detach(),
+                          evidence_examples=torch.tensor(count, device=qa.device))
         if "fusion_stats" in result["aux"]:
             output["fusion_stats"] = result["aux"]["fusion_stats"]
         if self.cfg.train.support_loss_weight > 0:
@@ -786,6 +826,10 @@ class QuROModel(nn.Module):
         keep = {name for name, value in self.named_parameters() if value.requires_grad}
         keep |= {name for name, _ in self.named_buffers()
                  if not name.startswith("query_encoder.backbone.")}
+        if isinstance(self.readout, QueryGuidedEvidenceProjector):
+            # A frozen S0 is learned state too. Omitting it silently reconstructs
+            # a random base when the new model is loaded for inference.
+            keep |= {"readout."+name for name in self.readout.state_dict()}
         return {name: value for name, value in self.state_dict().items() if name in keep}
 
     def save(self, path, optimizer=None, scheduler=None, step=None):
@@ -799,6 +843,11 @@ class QuROModel(nn.Module):
             "config": asdict(self.cfg),
             "step": step,
         }
+        if isinstance(self.readout, QueryGuidedEvidenceProjector):
+            payload["evidence_layout"] = self.readout.layout()
+            payload["s0_provenance"] = self.s0_provenance
+            payload["data_provenance"] = getattr(self, "data_provenance", None)
+            payload["train_order_digest"] = getattr(self, "train_order_digest", None)
         if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             payload["projector_layout"] = self._projector_layout()
         # The frozen query adapter is not trainable, so the filter above drops it
@@ -882,6 +931,26 @@ class QuROModel(nn.Module):
     def load(self, path, strict=False, optimizer=None, scheduler=None,
              allow_new_support_head=False, allow_new_projector_fusion=False):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        if isinstance(self.readout, QueryGuidedEvidenceProjector):
+            if (ckpt.get("evidence_layout") != self.readout.layout()
+                    or ckpt.get("generator_trainable")
+                    or ckpt.get("config", {}).get("readout", {}).get("kind") != "evidence_projector"):
+                raise ValueError("checkpoint has a different evidence/base/query/stage configuration")
+            expected = {"readout."+name for name in self.readout.state_dict()}
+            actual = {name for name in ckpt["state_dict"] if name.startswith("readout.")}
+            if expected != actual:
+                raise ValueError("checkpoint is missing or adds evidence readout weights, including frozen S0")
+            self.s0_provenance = ckpt.get("s0_provenance")
+            current_data = getattr(self, "data_provenance", None)
+            saved_data = ckpt.get("data_provenance")
+            if (optimizer is not None or scheduler is not None) and current_data is not None:
+                if not saved_data or any(current_data[key] != saved_data.get(key)
+                                         for key in ("train_sha256", "cache_digest", "rows")):
+                    raise ValueError("cannot resume evidence optimiser on changed training data/cache")
+            # Fresh warm starts retain the current input's fingerprint; eval-only
+            # reloads inherit the actual training source from the checkpoint.
+            self.data_provenance = current_data if current_data is not None else saved_data
+            self.train_order_digest = ckpt.get("train_order_digest")
         if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             saved = ckpt.get("config", {})
             if (saved.get("readout", {}).get("kind") != self.cfg.readout.kind
@@ -950,6 +1019,37 @@ class QuROModel(nn.Module):
             scheduler.load_state_dict(ckpt["scheduler"])
         missing = [x for x in missing if not x.startswith("query_encoder.backbone.")]
         return missing, unexpected, ckpt.get("step")
+
+    def initialize_s0(self, path):
+        """Explicit, strict S0 warm start; not a generic permissive state load."""
+        import hashlib
+        if not isinstance(self.readout, QueryGuidedEvidenceProjector):
+            raise ValueError("initialize_s0 requires evidence_projector")
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        saved = ckpt.get("config", {})
+        r = saved.get("readout", {})
+        g = saved.get("generator", {})
+        if (r.get("kind") != "shared_projector" or r.get("projector_query_mode") != "none"
+                or r.get("projector_fusion", "none") != "none"
+                or r.get("projector_cross_document", False) or r.get("support_head", False)
+                or ckpt.get("generator_trainable") or g.get("lora_init") != "frozen"):
+            raise ValueError("S0 source must be document-only QA projector with unchanged frozen reader")
+        for field in ("kind", "name_or_path", "n_mem_tokens"):
+            if g.get(field) != getattr(self.cfg.generator, field):
+                raise ValueError(f"S0 source uses a different generator {field}")
+        if saved.get("train", {}).get("support_loss_weight", 0):
+            raise ValueError("S0 source must be QA-only")
+        state = {name.removeprefix("readout."): value for name, value in ckpt["state_dict"].items()
+                 if name.startswith("readout.")}
+        self.readout.base.load_state_dict(state, strict=True)
+        # Fixed-query adapter weights, if present, must be restored as well.
+        self._restore_query_adapter(ckpt)
+        with open(path, "rb") as handle:
+            hasher = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024*1024), b""):
+                hasher.update(chunk)
+        self.s0_provenance = {"path": str(path), "sha256": hasher.hexdigest(), "step": ckpt.get("step")}
+        return self.s0_provenance
 
 
 def build_model(cfg, cache_hidden: Optional[int] = None):

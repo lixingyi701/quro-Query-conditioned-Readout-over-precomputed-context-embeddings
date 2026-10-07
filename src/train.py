@@ -20,6 +20,7 @@ cross-attention convergence noted in ``QURO_EXPERIMENTAL_DESIGN.md`` §8.1.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -42,6 +43,7 @@ from src.fusion_metrics import (add_fusion_stats, fusion_metrics, paired_change_
                                 paired_change_stats)
 from src.model import build_model
 from src.support import support_targets, support_scores
+from src.evidence import digest as evidence_digest, evidence_target
 
 
 def set_seed(seed):
@@ -110,7 +112,12 @@ def build_args():
     ap.add_argument("--device", default=None)
     ap.add_argument("--resume_from", default=None)
 
-    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector"], default=None)
+    ap.add_argument("--readout", choices=["quro", "pisco_direct", "similarity_topb", "joint_projector", "shared_projector", "evidence_projector"], default=None)
+    ap.add_argument("--s0_checkpoint", default=None)
+    ap.add_argument("--evidence_stage", choices=["full", "first_only", "slotwise"], default=None)
+    ap.add_argument("--evidence_base_trainable", action="store_true")
+    ap.add_argument("--evidence_loss_weight", type=float, default=None)
+    ap.add_argument("--evidence_max_len", type=int, default=None)
     ap.add_argument("--projector_hidden", type=int, default=None)
     ap.add_argument("--projector_query_mode", choices=["conditioned", "agnostic_matched", "none"], default=None,
                     help="conditioned: real query; agnostic_matched: fixed vectors; none: remove query branch")
@@ -227,6 +234,8 @@ def apply_overrides(cfg, args):
         ("support_head_input", cfg.readout),
         ("projector_fusion", cfg.readout),
         ("support_visibility_policy", cfg.train),
+        ("s0_checkpoint", cfg.train), ("evidence_loss_weight", cfg.train),
+        ("evidence_stage", cfg.readout), ("evidence_max_len", cfg.data),
     ]
     for name, target in simple:
         value = getattr(args, name)
@@ -234,6 +243,8 @@ def apply_overrides(cfg, args):
             setattr(target, name, value)
     if args.readout:
         cfg.readout.kind = args.readout
+    if args.evidence_base_trainable:
+        cfg.readout.evidence_base_trainable = True
     if args.projector_query_mode:
         cfg.readout.projector_query_mode = args.projector_query_mode
     if args.projector_conditioning:
@@ -325,7 +336,9 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
                               num_workers=cfg.train.num_workers,
                               pin_memory=cfg.train.num_workers > 0,
                               persistent_workers=cfg.train.num_workers > 0,
-                              prefetch_factor=4 if cfg.train.num_workers > 0 else None)
+                              prefetch_factor=4 if cfg.train.num_workers > 0 else None,
+                              generator=(torch.Generator().manual_seed(cfg.train.seed)
+                                         if cfg.readout.kind == "evidence_projector" else None))
     evals = {}
     for name, path in cfg.data.resolved_eval_files().items():
         # (variant, readout-query shift, decoder-query shift, document shift).
@@ -475,7 +488,7 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
 
 def run_evaluations(model, loaders, device, cfg, args, cache):
     out_dir = cfg.train.out_dir
-    if cfg.readout.kind == "shared_projector":
+    if cfg.readout.kind in {"shared_projector", "evidence_projector"}:
         budgets = [None]
     else:
         budgets = ([int(x) for x in args.eval_budgets.split(",")] if args.eval_budgets
@@ -486,6 +499,14 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "version": config_module.__version__,
         "tag": args.tag,
         "readout": cfg.readout.kind,
+        "evidence_stage": cfg.readout.evidence_stage if cfg.readout.kind == "evidence_projector" else None,
+        "evidence_base_trainable": cfg.readout.evidence_base_trainable,
+        "evidence_loss_weight": cfg.train.evidence_loss_weight,
+        "evidence_max_len": cfg.data.evidence_max_len,
+        "s0_provenance": getattr(model, "s0_provenance", None),
+        "data_provenance": getattr(model, "data_provenance", None),
+        "evidence_layout": model.readout.layout() if cfg.readout.kind == "evidence_projector" else None,
+        "train_order_digest": getattr(model, "train_order_digest", None),
         "output_query_mode": cfg.readout.output_query_mode,
         "cosine_prior": cfg.readout.cosine_prior,
         "arm": arm_label(cfg),
@@ -517,7 +538,7 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
         "support_loss_weight": cfg.train.support_loss_weight,
         "support_warmup_steps": cfg.train.support_warmup_steps,
         "support_visibility_policy": cfg.train.support_visibility_policy,
-        "budget_policy": "all_cached" if cfg.readout.kind == "shared_projector" else "configured",
+        "budget_policy": "all_cached" if cfg.readout.kind in {"shared_projector", "evidence_projector"} else "configured",
         "max_query_len": cfg.data.max_query_len,
         "query_adapter_hash": getattr(model.query_encoder, "query_adapter_hash", None),
         "kd_weight": args.kd_weight,
@@ -565,6 +586,9 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
 def main():
     args = build_args()
     cfg = apply_overrides(get_config(args.preset), args)
+    if cfg.readout.kind == "evidence_projector":
+        if bool(cfg.train.s0_checkpoint) == bool(cfg.train.resume_from):
+            raise ValueError("provide exactly one of --s0_checkpoint (new run) or --resume_from (QER checkpoint)")
     os.makedirs(cfg.train.out_dir, exist_ok=True)
     set_seed(cfg.train.seed)
     device = pick_device(cfg.train.device)
@@ -575,7 +599,7 @@ def main():
 
     cache = LatentCache(cfg.data.cache_dir)
     cfg.readout.cache_hidden = cache.metadata.hidden_size
-    if cfg.readout.kind in {"joint_projector", "shared_projector"}:
+    if cfg.readout.kind in {"joint_projector", "shared_projector", "evidence_projector"}:
         if args.disable_generator_adapter or args.teacher_logits or args.kd_weight:
             raise ValueError("projectors keep published adapters active and use gold answers without KD")
         if args.eval_input_modes and args.eval_input_modes != "D0":
@@ -590,7 +614,9 @@ def main():
           f"m={cache.metadata.latent_size}, h={cache.metadata.hidden_size}")
 
     stack, model = build_model(cfg, cache_hidden=cache.metadata.hidden_size)
-    if (cfg.readout.kind in {"joint_projector", "shared_projector"}
+    if cfg.train.s0_checkpoint:
+        print(f"[S0] {json.dumps(model.initialize_s0(cfg.train.s0_checkpoint))}")
+    if (cfg.readout.kind in {"joint_projector", "shared_projector", "evidence_projector"}
             and cache.metadata.latent_size != stack.n_mem_tokens):
         raise ValueError("cached memory count does not match the published reader's document slots")
     if args.disable_generator_adapter:
@@ -610,11 +636,46 @@ def main():
         query_pad_id=getattr(stack.query_tokenizer, "pad_token_id", model.pad_id),
         max_docs=cfg.data.max_docs,
         require_budget_labels=cfg.readout.adaptive_budget and not args.eval_only,
-        support_policy=cfg.train.support_visibility_policy if cfg.readout.support_head else None)
+        support_policy=cfg.train.support_visibility_policy if cfg.readout.support_head else None,
+        evidence_tokenizer=stack.tokenizer if cfg.train.evidence_loss_weight else None,
+        evidence_max_len=cfg.data.evidence_max_len)
     train_set, train_loader, eval_loaders = build_loaders(
         cfg, stack.tokenizer, stack.query_tokenizer, collator, args.query_control,
         args.doc_control, corpus, gamma_control=args.gamma_control)
     print(f"[data] train={len(train_set)} device={device}")
+    if cfg.readout.kind == "evidence_projector" and not args.eval_only:
+        if not len(train_loader):
+            raise ValueError("training set must contain at least one complete batch")
+        train_ids = {key for row in train_set.rows
+                     for key in (row["id"], row.get("original_id", row["id"]))}
+        if not eval_loaders or any(name == "train" for name in eval_loaders):
+            raise ValueError("QER training needs an explicit held-out eval_file")
+        for name, loader in eval_loaders.items():
+            eval_ids = {key for row in loader.dataset.rows
+                        for key in (row["id"], row.get("original_id", row["id"]))}
+            if train_ids & eval_ids:
+                raise ValueError(f"training/evaluation IDs overlap in {name}")
+        with open(cfg.data.train_file, "rb") as handle:
+            hasher = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024*1024), b""):
+                hasher.update(chunk)
+        model.data_provenance = dict(train_file=cfg.data.train_file, train_sha256=hasher.hexdigest(),
+                                     cache_digest=evidence_digest(cache.manifest), rows=len(train_set))
+        if cfg.train.evidence_loss_weight:
+            active, overlong, partial = 0, 0, 0
+            for row in train_set.rows:
+                text = evidence_target(row, row["retrieved_doc_ids"], collator.evidence_digest, require=True)
+                ids = stack.tokenizer(" "+text.strip(), add_special_tokens=False)["input_ids"] if text else []
+                length = len(ids) + int(bool(ids) and getattr(stack.tokenizer, "eos_token_id", None) is not None)
+                overlong += int(length > cfg.data.evidence_max_len)
+                usable = bool(ids) and length <= cfg.data.evidence_max_len
+                active += int(usable)
+                partial += int(usable and not row["evidence_annotation"]["all_facts_visible"])
+            if not active:
+                raise ValueError("no usable visible evidence targets at the configured token cap")
+            print(f"[evidence] active={active}/{len(train_set)} overlong={overlong} partial={partial}")
+            with open(os.path.join(cfg.train.out_dir, "evidence_coverage.json"), "w") as handle:
+                json.dump(dict(rows=len(train_set), active=active, overlong=overlong, partial=partial), handle, indent=2)
     if cfg.train.support_loss_weight and not args.eval_only:
         active, labelled = 0, 0
         for row in train_set.rows:
@@ -739,7 +800,8 @@ def main():
     model.train()
     rng = random.Random(cfg.train.seed)
     buckets = list(cfg.readout.budget_buckets)
-    full_budget = cfg.readout.kind == "shared_projector"
+    full_budget = cfg.readout.kind in {"shared_projector", "evidence_projector"}
+    order_hash = hashlib.sha256() if cfg.readout.kind == "evidence_projector" else None
     validation_budget = None if full_budget else cfg.readout.max_budget
     log_path = os.path.join(cfg.train.out_dir, "train_log.jsonl")
     started = time.time()
@@ -766,7 +828,7 @@ def main():
                 model.save(os.path.join(cfg.train.out_dir, "checkpoint_best.pt"), step=done)
 
         # The zero-initialised native reader is an eligible best checkpoint.
-        if (validation is not None and cfg.readout.kind in {"joint_projector", "shared_projector"}
+        if (validation is not None and cfg.readout.kind in {"joint_projector", "shared_projector", "evidence_projector"}
                 and start_step == 0):
             validate(0)
         for step in range(start_step, cfg.train.steps):
@@ -780,12 +842,17 @@ def main():
             totals = {"loss": 0.0, "qa_loss": 0.0, "mean_budget": 0.0,
                       "residual_penalty": 0.0, "kd_loss": 0.0}
             fusion_totals = {}
+            if cfg.train.evidence_loss_weight:
+                totals.update(evidence_loss=0.0, evidence_examples=0.0)
             if cfg.train.support_loss_weight:
                 totals.update(support_loss=0.0, support_examples=0.0, support_weight=0.0)
             support_weight = cfg.train.support_loss_weight * min(
                 1.0, (step+1)/max(1, cfg.train.support_warmup_steps))
             for _ in range(max(1, cfg.train.grad_accum)):
                 batch = move_to_device(next(iterator), device)
+                if order_hash is not None:
+                    order_hash.update(json.dumps(batch["ids"], separators=(",", ":")).encode()+b"\n")
+                    model.train_order_digest = order_hash.hexdigest()
                 output = model(batch, budget=budget, residual_weight=residual_weight,
                                teacher=teacher, kd_weight=args.kd_weight,
                                support_weight=support_weight)
@@ -802,6 +869,7 @@ def main():
 
             if step % cfg.train.log_every == 0 or step + 1 == cfg.train.steps:
                 record = {"step": step + 1, **{k: round(v, 4) for k, v in totals.items()},
+                          "train_order_digest": getattr(model, "train_order_digest", None),
                           "budget": "full" if full_budget else budget,
                           "residual_weight": round(residual_weight, 4),
                           "grad_norm": round(float(grad_norm), 3),
