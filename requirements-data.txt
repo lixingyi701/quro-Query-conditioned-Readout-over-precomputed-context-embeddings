@@ -1,0 +1,4 @@
+# Only public QA download and parquet reading; local JSONL preparation is stdlib-only.
+# Keep compatible with the repository's existing transformers/hub installation.
+huggingface_hub>=0.24,<1.0
+pyarrow>=15

@@ -196,6 +196,10 @@ def build_args():
     ap.add_argument("--train_file", default=None)
     ap.add_argument("--eval_files", default=None)
     ap.add_argument("--max_docs", type=int, default=None)
+    ap.add_argument("--max_answer_len", type=int, default=None,
+                    help="gold target token cap before EOS; audit mixed QA targets first")
+    ap.add_argument("--gen_max_new_tokens", type=int, default=None,
+                    help="shared generation limit for every evaluation arm")
     ap.add_argument("--eval_max_samples", type=int, default=None)
     ap.add_argument("--num_workers", type=int, default=None,
                     help="DataLoader prefetch workers; 0 reads the cache inline")
@@ -225,6 +229,7 @@ def apply_overrides(cfg, args):
         ("eval_max_samples", cfg.train), ("num_workers", cfg.train),
         ("d_readout", cfg.readout), ("cache_dir", cfg.data),
         ("train_file", cfg.data), ("max_docs", cfg.data),
+        ("max_answer_len", cfg.data), ("gen_max_new_tokens", cfg.train),
         ("projector_hidden", cfg.readout), ("max_query_len", cfg.data),
         ("projector_attention_dim", cfg.readout), ("projector_heads", cfg.readout),
         ("support_loss_weight", cfg.train), ("support_warmup_steps", cfg.train),
@@ -236,6 +241,8 @@ def apply_overrides(cfg, args):
         value = getattr(args, name)
         if value is not None:
             setattr(target, name, value)
+    if cfg.data.max_answer_len < 1 or cfg.train.gen_max_new_tokens < 1:
+        raise ValueError("answer and generation token caps must be positive")
     if args.readout:
         cfg.readout.kind = args.readout
     if args.projector_query_mode:
@@ -666,7 +673,7 @@ def main():
                 "steps", "batch_size", "grad_accum", "lr", "lr_schedule", "warmup_ratio",
                 "weight_decay", "grad_clip", "num_workers", "eval_every", "eval_every_samples",
                 "select_metric", "gen_max_new_tokens", "prefer_teacher_output", "residual_weight")},
-            "data_limits": {key: getattr(cfg.data, key) for key in ("max_docs", "max_query_len")},
+            "data_limits": {key: getattr(cfg.data, key) for key in ("max_docs", "max_query_len", "max_answer_len")},
             "generator_path": cfg.generator.name_or_path,
             "fresh_start": True, "completed_steps": 0, "microbatches": 0, "examples": 0,
             "order_sha256": order_hash.hexdigest(),
