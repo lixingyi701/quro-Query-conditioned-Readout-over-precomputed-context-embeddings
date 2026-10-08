@@ -4,6 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [`QURO_EXPERIMENTS_AND_MULTIDATASET_PLAN_20261008.md`](QURO_EXPERIMENTS_AND_MULTIDATASET_PLAN_20261008.md) | **截至 2026-10-08 的实验总账与多数据集计划**：完整历史结果、SQ 的 +0.62/+0.37 F1 正向增量、最新 QER 结果，以及五数据集评估、统一训练、基线与复用成本协议 |
 | [`QURO_PROJECTOR_RESEARCH_UPDATE_20261006.md`](QURO_PROJECTOR_RESEARCH_UPDATE_20261006.md) | **截至 2026-10-06 的投影器分支完整总结**：场景与动机、创新边界、具体实现、各轮实验、标准 SQ/S0 两种子消融、当前问题与后续缺口 |
 | [`QURO_RESEARCH_UPDATE_20261002.md`](QURO_RESEARCH_UPDATE_20261002.md) | **截至 2026-10-02 的综合实验总结**：六个分支、方案解释、正负结果、失败定位与结论边界；包含小预算读出、R/RQ、Direct-State 和 W |
 | [`QURO_EXPERIMENTAL_DESIGN.md`](QURO_EXPERIMENTAL_DESIGN.md) | 实验设计总纲：研究问题、基线、判据、摊薄论证 |
@@ -14,6 +15,14 @@
 | [`ENCODER_SCALING_INNOVATION_ANALYSIS.md`](ENCODER_SCALING_INNOVATION_ANALYSIS.md) | 早期方案可行性分析（放大 encoder 路线） |
 
 原始实验数据在 [`../results/`](../results/)。
+
+## 当前主线（2026-10-08）
+
+详见 [实验总账与多数据集评估计划](QURO_EXPERIMENTS_AND_MULTIDATASET_PLAN_20261008.md)。后续实验优先级以这份报告为准；下方保留此前的阶段记录。
+
+- **保留 SQ 的小幅正向 query 增量**：首轮 SQ−S0m 为 +0.62 F1；标准 SQ−S0 两种子平均为 +0.37 F1，95% 配对 CI [−0.01, +0.74]。两轮比较分别报告，不合并成精确的 +0.50。
+- **暂停新增 QER 扩展**：seed42、500 步、dev2000 上 A/B/C F1 为 63.70/63.50/63.50；这轮内容监督未带来额外 QA 收益。
+- **扩展原 SQ 的实验覆盖**：HotpotQA、NQ、TriviaQA、PopQA、WebQuestions；先评已有 SQ/S0 权重，再做统一混合训练与三种子主实验，并补基线、统一指标和真实复用成本。
 
 ## 投影器分支进展（截至 2026-10-06）
 
