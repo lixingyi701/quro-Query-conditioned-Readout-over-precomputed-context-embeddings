@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`CROSS_DOCUMENT_PROJECTOR_VALIDATION.md`](CROSS_DOCUMENT_PROJECTOR_VALIDATION.md) | SQX 复核：旧预测配对 CI、独立数据顺序、两 seed 分阶段验证和 query×跨文档消融，为逐跳读取/关系交互提供依据 |
+| [`CROSS_DOCUMENT_PROJECTOR_RESULTS.md`](CROSS_DOCUMENT_PROJECTOR_RESULTS.md) | **SQX 跨文档验证结果**：阶段 A/B/C 完整数字；顺序对齐后 bridge 均值 +0.35 F1pp（CI 跨零，未过门槛）；S0X−S0 接近零，交互项 bridge +0.36；探索性结论 |
 | [`PROJECTOR_INPUT_ATTRIBUTION.md`](PROJECTOR_INPUT_ATTRIBUTION.md) | eval-only 投影器输入归因：原始/范数/方向/完整四臂、真实 decoder 残差 hook、答案内容与 EOS 分离、配对分析 |
 | [`PROJECTOR_INPUT_ATTRIBUTION_RESULTS.md`](PROJECTOR_INPUT_ATTRIBUTION_RESULTS.md) | **四臂归因实验结果**：约 47 F1pp 收益几乎完全来自方向，范数无贡献；SQ−S0 +0.37 F1 集中在 comparison 题，bridge 题无增益 |
 | [`QUERY_PROJECTOR_ABLATION.md`](QUERY_PROJECTOR_ABLATION.md) | 标准 S0 消融：移除 query 分支、同尺寸文档 MLP、初始化对齐及独立训练协议 |
