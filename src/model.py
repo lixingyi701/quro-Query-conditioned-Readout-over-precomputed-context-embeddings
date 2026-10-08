@@ -799,6 +799,8 @@ class QuROModel(nn.Module):
             "config": asdict(self.cfg),
             "step": step,
         }
+        if hasattr(self, "data_order_provenance"):
+            payload["data_order_provenance"] = self.data_order_provenance
         if isinstance(self.readout, (JointQueryProjector, SharedDocumentProjector)):
             payload["projector_layout"] = self._projector_layout()
         # The frozen query adapter is not trainable, so the filter above drops it
@@ -944,6 +946,7 @@ class QuROModel(nn.Module):
         if ckpt.get("generator_trainable"):
             self.lm.load_state_dict(ckpt["generator_trainable"], strict=False)
         self._restore_query_adapter(ckpt)
+        self.data_order_provenance = ckpt.get("data_order_provenance")
         if optimizer is not None and "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
         if scheduler is not None and "scheduler" in ckpt:

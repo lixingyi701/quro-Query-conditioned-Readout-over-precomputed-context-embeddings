@@ -324,6 +324,8 @@ class TrainConfig:
     # be chosen after seeing the curves.
     select_metric: str = "em"
     seed: int = 42
+    # Opt-in independent DataLoader RNG; None preserves historical run order.
+    data_order_seed: Optional[int] = None
     device: str = "auto"
     out_dir: str = os.path.join(paths.RUNS_DIR, "debug")
     resume_from: Optional[str] = None

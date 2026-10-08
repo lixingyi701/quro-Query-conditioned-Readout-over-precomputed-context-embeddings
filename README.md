@@ -33,6 +33,9 @@ For saved-prediction top-k diagnostics and supervision on the final projected
 embeddings, see [`docs/SUPPORT_OUTPUT_SUPERVISION.md`](docs/SUPPORT_OUTPUT_SUPERVISION.md).
 The matched additive/FiLM query-modulation implementation, launch commands and
 confirmation protocol are in [`docs/QUERY_MODULATED_FUSION.md`](docs/QUERY_MODULATED_FUSION.md).
+For the existing SQX cross-document module, matched data-order validation and
+paired bridge/comparison analysis, see
+[`docs/CROSS_DOCUMENT_PROJECTOR_VALIDATION.md`](docs/CROSS_DOCUMENT_PROJECTOR_VALIDATION.md).
 
 [`docs/`](docs/) holds our own design notes, plans and results;
 [`article/`](article/) holds reading notes on other people's papers;

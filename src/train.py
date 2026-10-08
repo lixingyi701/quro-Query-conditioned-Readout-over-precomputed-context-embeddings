@@ -20,6 +20,7 @@ cross-attention convergence noted in ``QURO_EXPERIMENTAL_DESIGN.md`` §8.1.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -91,6 +92,8 @@ def build_args():
                     help="separate LR for the decoder LoRA; defaults to --lr")
     ap.add_argument("--grad_accum", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--data_order_seed", type=int, default=None,
+                    help="independent training sampler seed; records actual batch order")
     # Distillation from the full-cache teacher.  The gap to P is what defines the
     # problem, so P is the teacher; the gold CE stays because P is wrong often
     # enough that replacing the labels would inherit its mistakes too.
@@ -214,6 +217,7 @@ def apply_overrides(cfg, args):
     simple = [
         ("steps", cfg.train), ("batch_size", cfg.train), ("lr", cfg.train),
         ("grad_accum", cfg.train), ("seed", cfg.train), ("device", cfg.train),
+        ("data_order_seed", cfg.train),
         ("decoder_lr", cfg.train), ("eval_every", cfg.train),
         ("query_tokens", cfg.decoder),
         ("eval_every_samples", cfg.train), ("select_metric", cfg.train),
@@ -325,7 +329,9 @@ def build_loaders(cfg, tokenizer, query_tokenizer, collator, query_control,
                               num_workers=cfg.train.num_workers,
                               pin_memory=cfg.train.num_workers > 0,
                               persistent_workers=cfg.train.num_workers > 0,
-                              prefetch_factor=4 if cfg.train.num_workers > 0 else None)
+                              prefetch_factor=4 if cfg.train.num_workers > 0 else None,
+                              generator=(torch.Generator().manual_seed(cfg.train.data_order_seed)
+                                         if cfg.train.data_order_seed is not None else None))
     evals = {}
     for name, path in cfg.data.resolved_eval_files().items():
         # (variant, readout-query shift, decoder-query shift, document shift).
@@ -485,6 +491,13 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
     result = {
         "version": config_module.__version__,
         "tag": args.tag,
+        "data_order_provenance": getattr(model, "data_order_provenance", None),
+        "evaluation_protocol": {
+            "cache_manifest_sha256": hashlib.sha256(json.dumps(
+                cache.manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "generator_path": cfg.generator.name_or_path, "max_docs": cfg.data.max_docs,
+            "max_query_len": cfg.data.max_query_len, "gen_max_new_tokens": cfg.train.gen_max_new_tokens,
+        },
         "readout": cfg.readout.kind,
         "output_query_mode": cfg.readout.output_query_mode,
         "cosine_prior": cfg.readout.cosine_prior,
@@ -565,6 +578,8 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
 def main():
     args = build_args()
     cfg = apply_overrides(get_config(args.preset), args)
+    if cfg.train.data_order_seed is not None and cfg.train.resume_from and not args.eval_only:
+        raise ValueError("matched data-order training must start fresh; resume does not restore sampler state")
     os.makedirs(cfg.train.out_dir, exist_ok=True)
     set_seed(cfg.train.seed)
     device = pick_device(cfg.train.device)
@@ -635,6 +650,28 @@ def main():
         run_evaluations(model, eval_loaders, device, cfg, args, cache)
         return
 
+    order_hash = None
+    if cfg.train.data_order_seed is not None:
+        train_hash = hashlib.sha256()
+        with open(cfg.data.train_file, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                train_hash.update(chunk)
+        order_hash = hashlib.sha256()
+        model.data_order_provenance = {
+            "seed": cfg.train.seed, "data_order_seed": cfg.train.data_order_seed,
+            "train_sha256": train_hash.hexdigest(),
+            "cache_manifest_sha256": hashlib.sha256(json.dumps(
+                cache.manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "protocol": {key: getattr(cfg.train, key) for key in (
+                "steps", "batch_size", "grad_accum", "lr", "lr_schedule", "warmup_ratio",
+                "weight_decay", "grad_clip", "num_workers", "eval_every", "eval_every_samples",
+                "select_metric", "gen_max_new_tokens", "prefer_teacher_output", "residual_weight")},
+            "data_limits": {key: getattr(cfg.data, key) for key in ("max_docs", "max_query_len")},
+            "generator_path": cfg.generator.name_or_path,
+            "fresh_start": True, "completed_steps": 0, "microbatches": 0, "examples": 0,
+            "order_sha256": order_hash.hexdigest(),
+        }
+
     params = model.trainable_parameters()
     if not params:
         raise RuntimeError("nothing is trainable; check readout kind and generator_lora_init")
@@ -691,6 +728,9 @@ def main():
                     best = json.load(f)
                 print(f"[init] resumed at step {start_step}; best so far "
                       f"{best.get('metric')} at step {best.get('step')}")
+        # Continued training without the sampler audit must not retain a stale
+        # certificate from the checkpoint it started with.
+        model.data_order_provenance = None
 
     # Interval validation on a small, fixed dev slice.  It exists to answer
     # "was 3000 steps too few, or is the capacity not there" -- a question the
@@ -786,6 +826,12 @@ def main():
                 1.0, (step+1)/max(1, cfg.train.support_warmup_steps))
             for _ in range(max(1, cfg.train.grad_accum)):
                 batch = move_to_device(next(iterator), device)
+                if order_hash is not None:
+                    order_hash.update(json.dumps(batch["ids"], separators=(",", ":")).encode() + b"\n")
+                    provenance = model.data_order_provenance
+                    provenance["order_sha256"] = order_hash.hexdigest()
+                    provenance["microbatches"] += 1
+                    provenance["examples"] += len(batch["ids"])
                 output = model(batch, budget=budget, residual_weight=residual_weight,
                                teacher=teacher, kd_weight=args.kd_weight,
                                support_weight=support_weight)
@@ -799,6 +845,8 @@ def main():
             grad_norm = torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
             optimizer.step()
             scheduler.step()
+            if order_hash is not None:
+                model.data_order_provenance["completed_steps"] = step + 1
 
             if step % cfg.train.log_every == 0 or step + 1 == cfg.train.steps:
                 record = {"step": step + 1, **{k: round(v, 4) for k, v in totals.items()},
@@ -807,6 +855,8 @@ def main():
                           "grad_norm": round(float(grad_norm), 3),
                           "lr": scheduler.get_last_lr()[0],
                           "seconds": round(time.time() - started, 1)}
+                if order_hash is not None:
+                    record["train_order_digest"] = model.data_order_provenance["order_sha256"]
                 record.update({k: round(v, 6) if v is not None else None
                                for k, v in fusion_metrics(fusion_totals).items()})
                 if cfg.readout.support_head:
