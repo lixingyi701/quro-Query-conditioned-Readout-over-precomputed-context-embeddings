@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`PUBLIC_QA_TRAINING.md`](PUBLIC_QA_TRAINING.md) | 复用 COCOM/PISCO 的 453k 公开混合问题池：固定版本下载、评测排除、检索接入、缺失清单、长度审计和服务器训练命令 |
+| [`PUBLIC_QA_TRAINING_RESULTS.md`](PUBLIC_QA_TRAINING_RESULTS.md) | **公开混合集训练结果**：90k 问题 + SPLADE-v3/DeBERTa-v3 检索（kilt-128 top-5），SQX/SQ/S0X/S0 单 seed；HotpotQA test 上混训低于领域内训练，SQ−S0 +2.15 F1，SQX−SQ −1.68 F1 |
 | [`CROSS_DOCUMENT_PROJECTOR_VALIDATION.md`](CROSS_DOCUMENT_PROJECTOR_VALIDATION.md) | SQX 复核：旧预测配对 CI、独立数据顺序、两 seed 分阶段验证和 query×跨文档消融，为逐跳读取/关系交互提供依据 |
 | [`CROSS_DOCUMENT_PROJECTOR_RESULTS.md`](CROSS_DOCUMENT_PROJECTOR_RESULTS.md) | **SQX 跨文档验证结果**：阶段 A/B/C 完整数字；顺序对齐后 bridge 均值 +0.35 F1pp（CI 跨零，未过门槛）；S0X−S0 接近零，交互项 bridge +0.36；探索性结论 |
 | [`PROJECTOR_INPUT_ATTRIBUTION.md`](PROJECTOR_INPUT_ATTRIBUTION.md) | eval-only 投影器输入归因：原始/范数/方向/完整四臂、真实 decoder 残差 hook、答案内容与 EOS 分离、配对分析 |
