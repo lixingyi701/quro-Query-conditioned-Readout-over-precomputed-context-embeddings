@@ -39,11 +39,19 @@ if [[ $crossdoc_phase == train ]]; then
     --eval_files "dev=$crossdoc_data/dev.jsonl" --eval_max_samples 2000)
 else
   crossdoc_split=${CROSSDOC_SPLIT:-test}
-  case "$crossdoc_split" in dev|test) ;; *) echo "CROSSDOC_SPLIT must be dev or test" >&2; exit 2;; esac
+  case "$crossdoc_split" in dev|test|trivia) ;; *) echo "CROSSDOC_SPLIT must be dev, test or trivia" >&2; exit 2;; esac
   crossdoc_checkpoint=${CROSSDOC_CHECKPOINT:-$crossdoc_run/checkpoint_last.pt}
   crossdoc_output="$crossdoc_run/eval_$crossdoc_split"
+  crossdoc_eval_file="$crossdoc_data/$crossdoc_split.jsonl"
+  if [[ $crossdoc_split == trivia ]]; then
+    # Out-of-domain: the HotpotQA-trained checkpoint reads the TriviaQA cache.
+    # The train file is still loaded by build_loaders but never collated.
+    crossdoc_eval_file=${CROSSDOC_TRIVIA_FILE:-/data02/quro/data/trivia/queries.jsonl}
+    crossdoc_cache=${CROSSDOC_TRIVIA_CACHE:-/data02/quro/cache/trivia-pisco-r16}
+    crossdoc_cmd+=(--cache_dir "$crossdoc_cache" --doc_control)
+  fi
   crossdoc_cmd+=(--eval_only --resume_from "$crossdoc_checkpoint"
-    --eval_files "$crossdoc_split=$crossdoc_data/$crossdoc_split.jsonl" --eval_max_samples 999999)
+    --eval_files "$crossdoc_split=$crossdoc_eval_file" --eval_max_samples 999999)
   if [[ ${CROSSDOC_QUERY_CONTROL:-0} == 1 ]]; then
     crossdoc_output="${crossdoc_output}_query_control"
     crossdoc_cmd+=(--query_control)
@@ -58,7 +66,7 @@ done
 if [[ $crossdoc_phase == train ]]; then
   [[ -f $crossdoc_data/dev.jsonl ]] || { echo "Missing dev.jsonl" >&2; exit 1; }
 else
-  [[ -f $crossdoc_checkpoint && -f $crossdoc_data/$crossdoc_split.jsonl ]] || { echo "Missing checkpoint or evaluation split" >&2; exit 1; }
+  [[ -f $crossdoc_checkpoint && -f $crossdoc_eval_file ]] || { echo "Missing checkpoint or evaluation split" >&2; exit 1; }
 fi
 [[ ! -e $crossdoc_output ]] || { echo "Output already exists: $crossdoc_output; choose a fresh root" >&2; exit 1; }
 exec "${crossdoc_cmd[@]}"

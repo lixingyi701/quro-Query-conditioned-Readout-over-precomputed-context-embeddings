@@ -114,7 +114,50 @@ EM 方向相同：全部 +0.57 [−0.12, +1.27]，bridge +0.68 [−0.12, +1.45]�
 
 若需要把 SQX−SQ 的估计做实，可补 seed44/45 的 SQ/SQX（四卡并行约 1.8 小时）。
 
-## 9. 文件位置
+## 9. TriviaQA 跨域评测（2026-10-09）
+
+阶段 B/C 的 8 个 checkpoint（HotpotQA 专训，last）不重训，直接在 TriviaQA 2,000 题（`trivia/queries.jsonl`，已是开发数据）上评测，同时跑错配文档对照。缓存 `trivia-pisco-r16`，max_query_len 256，K 取每题全部检索段落。命令：
+
+```bash
+CROSSDOC_SPLIT=trivia bash scripts/run_cross_document_validation.sh eval ARM SEED
+```
+
+### 各臂绝对分（%）
+
+| 臂 | seed | EM | F1 | substring | 错配文档 EM | 证据值 EM |
+|---|---|---:|---:|---:|---:|---:|
+| S0 | 42 / 43 | 68.30 / 68.00 | 74.12 / 73.95 | 73.55 / 73.45 | 58.80 / 58.45 | 9.5 / 9.6 |
+| S0X | 42 / 43 | 69.15 / 70.40 | 74.70 / 75.82 | 73.75 / 74.70 | 62.00 / 62.00 | 7.2 / 8.4 |
+| SQ | 42 / 43 | 67.10 / 67.65 | 73.16 / 73.35 | 73.20 / 73.30 | 56.95 / 57.90 | 10.2 / 9.8 |
+| SQX | 42 / 43 | 69.05 / 69.70 | 74.58 / 75.09 | 74.05 / 74.25 | 61.30 / 61.25 | 7.8 / 8.5 |
+
+证据值 = 正确文档 EM − 错配文档 EM。
+
+### 配对差（两 seed 逐题平均后按题 bootstrap，F1pp，95% CI）
+
+| 对比 | F1 | EM | s42 / s43（F1） |
+|---|---|---|---|
+| SQ − S0 | **−0.78** [−1.28, −0.28] | −0.78 | −0.95 / −0.60 |
+| SQX − SQ | **+1.58** [+0.95, +2.23] | +2.00 | +1.42 / +1.74 |
+| S0X − S0 | **+1.23** [+0.64, +1.84] | +1.62 | +0.58 / +1.87 |
+| SQX − S0X | −0.43 [−0.90, +0.04] | −0.40 | −0.12 / −0.73 |
+| SQX − S0 | +0.80 [+0.19, +1.43] | +1.23 | +0.46 / +1.14 |
+| 交互项 | +0.35 [−0.26, +0.95] | — | — |
+
+CI 只反映题目抽样，不含训练随机性。
+
+### 解读
+
+1. **query 分支在 TriviaQA 上小幅为负**：SQ−S0 −0.78，两个 seed 同负，与 HotpotQA 专训 test 上的 +0.37 方向相反。
+2. **跨文档 attention 在 TriviaQA 上为正**：两组 X−非X 都在 +1.2 至 +1.6，CI 不跨零。
+3. **这部分增益主要落在错配文档地板上**：X 臂地板高约 3.5 EM（约 62 对 58.6），证据值反而从约 9.6 降到约 8。更可能是闭卷能力或答题格式保留得更好，而不是证据利用更好；此解释未验证。
+4. TriviaQA 证据可争空间只有约 9 分（与 HANDOFF 的 8.8 一致），这里的差值不宜外推到多跳任务。
+
+### 与历史 TriviaQA 结果的关系
+
+历史结果口径不同（max_query_len 64、`gonogo-pisco-r16` 缓存、训练数据不同），不能配对：`hp2d0_P_trivia`（Hotpot 训 PISCO direct）EM 71.95、地板 59.5；`adapt_AGRG2` RG（原文）74.1、AG（闭卷）63.2。发布版 PISCO 未在本口径下评测 TriviaQA。
+
+## 10. 文件位置
 
 | 内容 | 路径 |
 |---|---|
@@ -123,3 +166,5 @@ EM 方向相同：全部 +0.57 [−0.12, +1.27]，bridge +0.68 [−0.12, +1.45]�
 | 阶段 C 四臂分析 | `/data02/quro/runs/crossdoc_validation_v1/full_four_arm_dev.json` |
 | 各臂 run（checkpoint、dev 预测、result.json） | `/data02/quro/runs/crossdoc_validation_v1/seed{42,43}/{S0,S0X,SQ,SQX}/` |
 | 训练日志 | `/data02/quro/runs/crossdoc_validation_v1/logs/{arm}_s{seed}.log` |
+| TriviaQA 评测（预测、result.json） | `/data02/quro/runs/crossdoc_validation_v1/seed{42,43}/{arm}/eval_trivia/` |
+| TriviaQA 汇总 | `results/crossdoc_trivia/`（同 `/data02/quro/runs/crossdoc_validation_v1/trivia_four_arm.txt`） |
