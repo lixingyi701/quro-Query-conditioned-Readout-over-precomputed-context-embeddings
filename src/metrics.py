@@ -60,6 +60,15 @@ def aggregate(rows: List[Dict]) -> Dict[str, float]:
     return out
 
 
+def aggregate_groups(rows: List[Dict], field: str) -> Dict[str, Dict]:
+    """Keep sample counts next to per-source/per-hop validation scores."""
+    groups = {}
+    for row in rows:
+        if row.get(field) is not None:
+            groups.setdefault(str(row[field]), []).append(row)
+    return {name: aggregate(values) for name, values in sorted(groups.items())}
+
+
 def constant_baseline(all_golds: Sequence[Sequence[str]]) -> Dict[str, float]:
     """Best score obtainable by ignoring the input and always saying the same thing.
 

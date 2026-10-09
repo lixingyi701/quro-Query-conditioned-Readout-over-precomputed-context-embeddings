@@ -86,6 +86,8 @@ def build_args():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out_dir", default=None)
     ap.add_argument("--steps", type=int, default=None)
+    ap.add_argument("--checkpoint_steps", default="",
+                    help="comma-separated steps to save weights for matched-budget evaluation; not resumable sampler snapshots")
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--decoder_lr", type=float, default=None,
@@ -412,6 +414,10 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
             golds = item.get("answers") or [item["answer"]]
             row = {"id": item["id"], "query": item["query"], "golds": golds,
                    "pred": prediction, **metrics.score(prediction, golds)}
+            row["retrieved_doc_ids"] = list(batch["retrieved_doc_ids"][i])
+            for field in ("source", "hop_type", "eval_split", "evidence_protocol"):
+                if field in item:
+                    row[field] = item[field]
             logits = result["aux"].get("support_logits")
             if logits is not None and "support_labels" in batch:
                 n = len(batch["retrieved_doc_ids"][i])
@@ -442,6 +448,8 @@ def evaluate(model, loader, device, max_new_tokens, budget=None, dump_attn_path=
     if attention:
         torch.save(attention, dump_attn_path)
     aggregate = metrics.aggregate(rows)
+    aggregate["by_source"] = metrics.aggregate_groups(rows, "source")
+    aggregate["by_hop_type"] = metrics.aggregate_groups(rows, "hop_type")
     aggregate.update(fusion_metrics(fusion_totals))
     aggregate.update(paired_change_metrics(change_totals))
     # Always carry the "ignore the input and answer the same thing every time"
@@ -585,6 +593,9 @@ def run_evaluations(model, loaders, device, cfg, args, cache):
 def main():
     args = build_args()
     cfg = apply_overrides(get_config(args.preset), args)
+    checkpoint_steps = {int(value) for value in args.checkpoint_steps.split(",") if value.strip()}
+    if any(step < 1 or step > cfg.train.steps for step in checkpoint_steps):
+        raise ValueError("checkpoint steps must be positive and within the planned training horizon")
     if cfg.train.data_order_seed is not None and cfg.train.resume_from and not args.eval_only:
         raise ValueError("matched data-order training must start fresh; resume does not restore sampler state")
     os.makedirs(cfg.train.out_dir, exist_ok=True)
@@ -675,6 +686,7 @@ def main():
                 "select_metric", "gen_max_new_tokens", "prefer_teacher_output", "residual_weight")},
             "data_limits": {key: getattr(cfg.data, key) for key in ("max_docs", "max_query_len", "max_answer_len")},
             "generator_path": cfg.generator.name_or_path,
+            "checkpoint_steps": sorted(checkpoint_steps),
             "fresh_start": True, "completed_steps": 0, "microbatches": 0, "examples": 0,
             "order_sha256": order_hash.hexdigest(),
         }
@@ -802,6 +814,9 @@ def main():
             record = {"step": done, "split": name, "val_budget": "full" if full_budget else validation_budget,
                       **{k: round(float(aggregate[k]), 4) for k in ("em", "substring", "f1")},
                       "seconds": round(time.time() - started, 1)}
+            record["by_source"] = aggregate["by_source"]
+            record["by_hop_type"] = aggregate["by_hop_type"]
+            record["train_passes_nominal"] = done * cfg.train.batch_size * cfg.train.grad_accum / len(train_set)
             record.update({k: v for k, v in aggregate.items()
                            if k.startswith(("support_", "fusion_"))})
             print(f"[val] {record}", flush=True)
@@ -862,6 +877,7 @@ def main():
                           "grad_norm": round(float(grad_norm), 3),
                           "lr": scheduler.get_last_lr()[0],
                           "seconds": round(time.time() - started, 1)}
+                record["train_passes_nominal"] = (step + 1) * cfg.train.batch_size * cfg.train.grad_accum / len(train_set)
                 if order_hash is not None:
                     record["train_order_digest"] = model.data_order_provenance["order_sha256"]
                 record.update({k: round(v, 6) if v is not None else None
@@ -887,8 +903,10 @@ def main():
 
             done = step + 1
             if validation is not None and (done % cfg.train.eval_every == 0
-                                           or done == cfg.train.steps):
+                                           or done == cfg.train.steps or done in checkpoint_steps):
                 validate(done)
+            if done in checkpoint_steps:
+                model.save(os.path.join(cfg.train.out_dir, f"checkpoint_step{done}.pt"), step=done)
 
     model.save(os.path.join(cfg.train.out_dir, "checkpoint_last.pt"),
                optimizer=optimizer, scheduler=scheduler, step=cfg.train.steps)

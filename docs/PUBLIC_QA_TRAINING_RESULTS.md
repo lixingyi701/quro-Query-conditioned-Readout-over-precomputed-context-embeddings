@@ -2,6 +2,8 @@
 
 日期：2026-10-09。分支：`feat/pisco-joint-query-projector`，协议见 [`PUBLIC_QA_TRAINING.md`](PUBLIC_QA_TRAINING.md)（827e294）。
 
+后续执行已整理为 [`OPEN_RAG_SCALE_EXECUTION.md`](OPEN_RAG_SCALE_EXECUTION.md)。本页历史HotpotQA分数来自“检索K5训练 → 原生K10评测”，不能代替共同检索K5条件下的主比较，也未单独证明题目数、epoch或K是退化原因。
+
 **结论：在公开 10 来源混合集上训练（90k 问题，单 seed）后，在 HotpotQA test 上，四个混训投影器都比同结构的 HotpotQA 专项训练低约 13–15 F1（§3.4），substring 也比原始 PISCO 低 7–11 个百分点。四臂之间，SQ 最好；主模型 SQX 显著低于 SQ（F1 −1.68）。这批结果不支持"扩大到混合训练能提升 SQX"。**
 
 ## 1. 数据构造
@@ -98,7 +100,7 @@
 | 训练问题数 | 90,000 | 453,023（去除评测重合与无效后可用 447,689） |
 | 样本呈现次数 | 约 144k（9,000 步 × 16） | — |
 
-本轮只用了公开池的约 20%，每题约见 1.6 次。PISCO/COCOM 论文使用整个 453k 池（PISCO §4.1）；它们的训练轮数和 batch 本次没有核对原文，不在此给出。它们训练的是 compressor 与 decoder 的 LoRA，本项目只训投影器，所以训练量不能按参数量直接对照。
+本轮只用了公开池的约 20%，每个训练条目平均呈现约 1.6 次。PISCO §4.1 使用约453k公共问题；COCOM论文表12统计493,473条，与当前公开453,023条版本不完全相同。后续已核实：PISCO附录表5为1 epoch、有效batch128；COCOM附录表11的QA微调为2 epochs、有效batch64，详见 [`OPEN_RAG_SCALE_EXECUTION.md`](OPEN_RAG_SCALE_EXECUTION.md) §2.4。它们更新原模型适配参数，本项目只训投影器，且使用gold而非PISCO教师silver目标，训练量不能按epoch或参数量直接等同。
 
 上面的曲线显示，在 90k 子集上加步数（更多遍）的收益已经很小；用更多不同的问题能否提升，需要用全量 447k 实际训练才能回答。
 
@@ -106,13 +108,13 @@
 
 ### 3.1 设置
 
-- 测试集：HotpotQA distractor test，K=10（每题 10 篇原生段落），缓存 `hotpot-pisco-r16`。
+- 测试集：项目内部HotpotQA distractor test5405，由官方validation划分留出；并非官方隐藏test。K=10（每题10篇原生段落），缓存 `hotpot-pisco-r16`。
 - checkpoint：各臂的 best。
 - 注意：训练时每题只有 K=5 篇检索段落，测试时是 K=10，测试条件与训练条件不同。
 
 两个参照：
 
-- **原始 PISCO**：`shared_projector_v1/published_direct`，发布版权重，不训投影器。它只在 test 前 2,000 题上跑过。PISCO 没有对齐短答案格式，输出是整句（预测中位 19 词），所以 EM/F1 很低，只有 substring 有意义。
+- **原始 PISCO**：`shared_projector_v1/published_direct`，发布版权重，不训投影器。它只在test前2,000题上跑过。输出是整句（预测中位19词），与短答案目标风格不同；EM/F1受到额外解释的惩罚，应与substring及答案长度一起解读。
 - **HotpotQA 专训 S0**：`query_ablation/s0_s42`，只在 HotpotQA K=10 训练集上训练 3,000 步。训练分布与测试一致，是"领域内训练"的上限参照，不是 PISCO 基线。
 
 本轮第一次跑基线时误用了 `pisco_hotpot` preset（B=8，readout 不同），得到 EM 0.20%，该结果作废。
@@ -128,7 +130,7 @@
 | 混训 S0X | 37.35 | 49.76 | 39.35 | −10.55 [−12.80, −8.30] |
 | 混训 S0 | 37.85 | 50.38 | 40.75 | −9.15 [−11.50, −7.00] |
 
-substring 衡量 gold 是否出现在输出中，不受 PISCO 长句格式影响，所以用它和原始 PISCO 比较。
+substring衡量规范化gold是否出现在输出中，对PISCO长句更宽容，因此有助于比较答案内容；它仍受输出长度和误命中影响，不能称作完全与风格无关。
 
 - 四个混训臂都学会了短答案格式（预测中位 2 词），EM/F1 因此远高于原始 PISCO。
 - 但它们的 substring 显著低于原始 PISCO：**混训投影器在 HotpotQA 上损失了答案内容**，不只是格式变了。

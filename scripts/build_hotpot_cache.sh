@@ -22,6 +22,7 @@ cd "$(dirname "$0")/.."
 
 CORPUS="${CORPUS:-/data02/quro/data/hotpot/corpus.jsonl}"
 CACHE="${CACHE:-/data02/quro/cache/hotpot-pisco-r16}"
+CHECKPOINT="${CHECKPOINT:-/data02/quro/models/pisco-mistral}"
 IFS=',' read -r -a GPU_LIST <<< "${GPUS:-0,1,2,3}"
 N="${#GPU_LIST[@]}"
 
@@ -30,6 +31,7 @@ SLICE=$(( (TOTAL + N - 1) / N ))
 echo "corpus: $TOTAL paragraphs -> $N slices of $SLICE on GPUs ${GPU_LIST[*]}"
 
 if [ -z "${MERGE_ONLY:-}" ]; then
+  pids=()
   for i in "${!GPU_LIST[@]}"; do
     gpu="${GPU_LIST[$i]}"
     offset=$(( i * SLICE ))
@@ -39,11 +41,14 @@ if [ -z "${MERGE_ONLY:-}" ]; then
         --documents "$CORPUS" --out_dir "$out" \
         --offset "$offset" --limit "$SLICE" \
         --adapter src.compressors.pisco:build \
-        --checkpoint /data02/quro/models/pisco-mistral \
+        --checkpoint "$CHECKPOINT" \
         --batch_size 64 --shard_size 8192 --dtype float16 \
         > "${CACHE}-part${i}.log" 2>&1 &
+    pids+=("$!")
   done
-  wait
+  failed=0
+  for pid in "${pids[@]}"; do if ! wait "$pid"; then failed=1; fi; done
+  if (( failed )); then echo "cache worker failed; refusing to pack partial slices" >&2; exit 1; fi
   echo "all slices built"
 fi
 
@@ -52,7 +57,9 @@ fi
 # the check compares against.
 EXTRA=()
 for i in $(seq 1 $((N - 1))); do EXTRA+=("${CACHE}-part${i}"); done
-python scripts/pack_latent_cache.py --cache "${CACHE}-part0" "${EXTRA[@]:+--merge}" "${EXTRA[@]:+${EXTRA[@]}}"
+PACK_ARGS=(--cache "${CACHE}-part0")
+if (( ${#EXTRA[@]} )); then PACK_ARGS+=(--merge "${EXTRA[@]}"); fi
+python scripts/pack_latent_cache.py "${PACK_ARGS[@]}"
 
 # The preset points at $CACHE, so expose the merged part0 under that name.
 if [ ! -e "$CACHE" ]; then ln -s "${CACHE}-part0" "$CACHE"; fi

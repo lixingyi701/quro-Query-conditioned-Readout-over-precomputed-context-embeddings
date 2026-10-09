@@ -2,6 +2,8 @@
 
 更新：2026-10-08。适用分支：`feat/pisco-joint-query-projector`。
 
+2026-10-09 接续执行见 [`OPEN_RAG_SCALE_EXECUTION.md`](OPEN_RAG_SCALE_EXECUTION.md)：保留开放域检索K5，补齐共同证据评测，再以相同更新预算比较全量与嵌套90k问题池。本文件保留早期构造说明；整批90k检索/缓存/训练已完成，实际状态以 [`PUBLIC_QA_TRAINING_RESULTS.md`](PUBLIC_QA_TRAINING_RESULTS.md) 为准。
+
 ## 1. 决定与发布范围
 
 优先复用作者的 **`dmrau/multi_qa`**，不再把之前建议的 NQ 25k、TriviaQA
