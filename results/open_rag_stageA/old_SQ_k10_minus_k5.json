@@ -1,0 +1,128 @@
+{
+  "direction": "left_minus_right",
+  "paired_by": "identical_question_ids_queries_gold_aliases",
+  "evidence_change_allowed": true,
+  "groups": {
+    "all": {
+      "n": 2000,
+      "substring": {
+        "left_percent": 33.65,
+        "right_percent": 34.6,
+        "delta_pp": -0.95,
+        "ci95_pp": [
+          -2.3,
+          0.4
+        ]
+      },
+      "em": {
+        "left_percent": 30.95,
+        "right_percent": 31.2,
+        "delta_pp": -0.25,
+        "ci95_pp": [
+          -1.55,
+          1.05
+        ]
+      },
+      "f1": {
+        "left_percent": 41.55323229466601,
+        "right_percent": 42.29826751952926,
+        "delta_pp": -0.7450352248632143,
+        "ci95_pp": [
+          -1.978546300472478,
+          0.5479216016137527
+        ]
+      }
+    },
+    "source:hotpot_dev": {
+      "n": 2000,
+      "substring": {
+        "left_percent": 33.65,
+        "right_percent": 34.6,
+        "delta_pp": -0.95,
+        "ci95_pp": [
+          -2.3,
+          0.4
+        ]
+      },
+      "em": {
+        "left_percent": 30.95,
+        "right_percent": 31.2,
+        "delta_pp": -0.25,
+        "ci95_pp": [
+          -1.55,
+          1.05
+        ]
+      },
+      "f1": {
+        "left_percent": 41.55323229466601,
+        "right_percent": 42.29826751952926,
+        "delta_pp": -0.7450352248632143,
+        "ci95_pp": [
+          -1.978546300472478,
+          0.5479216016137527
+        ]
+      }
+    },
+    "hop_type:bridge": {
+      "n": 1622,
+      "substring": {
+        "left_percent": 27.435265104808877,
+        "right_percent": 28.1134401972873,
+        "delta_pp": -0.6781750924784217,
+        "ci95_pp": [
+          -2.157829839704069,
+          0.6781750924784217
+        ]
+      },
+      "em": {
+        "left_percent": 24.66091245376079,
+        "right_percent": 24.784217016029594,
+        "delta_pp": -0.12330456226880394,
+        "ci95_pp": [
+          -1.5413070283600494,
+          1.2946979038224413
+        ]
+      },
+      "f1": {
+        "left_percent": 35.55433003667752,
+        "right_percent": 36.13468010047761,
+        "delta_pp": -0.5803500638001122,
+        "ci95_pp": [
+          -2.066405216948082,
+          0.7579718447181868
+        ]
+      }
+    },
+    "hop_type:comparison": {
+      "n": 378,
+      "substring": {
+        "left_percent": 60.317460317460316,
+        "right_percent": 62.43386243386244,
+        "delta_pp": -2.1164021164021163,
+        "ci95_pp": [
+          -5.555555555555555,
+          1.0582010582010581
+        ]
+      },
+      "em": {
+        "left_percent": 57.93650793650794,
+        "right_percent": 58.73015873015873,
+        "delta_pp": -0.7936507936507936,
+        "ci95_pp": [
+          -3.968253968253968,
+          2.380952380952381
+        ]
+      },
+      "f1": {
+        "left_percent": 67.29455362391869,
+        "right_percent": 68.74625374625376,
+        "delta_pp": -1.4517001223350434,
+        "ci95_pp": [
+          -4.451042784376118,
+          1.4105052795528987
+        ]
+      }
+    }
+  },
+  "uncertainty": "question bootstrap only; single seed does not measure training randomness"
+}

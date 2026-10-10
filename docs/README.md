@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`OPEN_RAG_SCALE_EXECUTION.md`](OPEN_RAG_SCALE_EXECUTION.md) | **下一轮执行入口**：检索K5共同评测、检索K10诊断、全量/90k × SQ/S0同更新预算对照，命令、判据与代码 |
+| [`OPEN_RAG_SCALE_RESULTS.md`](OPEN_RAG_SCALE_RESULTS.md) | 开放域执行记录：阶段 A 共同证据评测结果（K5/K10）、阶段 B 数据与缓存、阶段 C 运行状态 |
 | [`PUBLIC_QA_TRAINING.md`](PUBLIC_QA_TRAINING.md) | 复用 COCOM/PISCO 的 453k 公开混合问题池：固定版本下载、评测排除、检索接入、缺失清单、长度审计和服务器训练命令 |
 | [`PUBLIC_QA_TRAINING_RESULTS.md`](PUBLIC_QA_TRAINING_RESULTS.md) | **公开混合集训练结果**：90k 问题 + SPLADE-v3/DeBERTa-v3 检索（kilt-128 top-5），SQX/SQ/S0X/S0 单 seed；HotpotQA test 上混训低于领域内训练，SQ−S0 +2.15 F1，SQX−SQ −1.68 F1 |
 | [`CROSS_DOCUMENT_PROJECTOR_VALIDATION.md`](CROSS_DOCUMENT_PROJECTOR_VALIDATION.md) | SQX 复核：旧预测配对 CI、独立数据顺序、两 seed 分阶段验证和 query×跨文档消融，为逐跳读取/关系交互提供依据 |

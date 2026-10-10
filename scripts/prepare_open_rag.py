@@ -110,7 +110,15 @@ def missing_queries(args):
     for split in ("train", "dev"):
         pending = []
         for row in public.read_jsonl(root / f"{split}.queries.jsonl"):
-            found, _ = index.get(row)
+            try:
+                found, _ = index.get(row)
+            except ValueError as error:
+                # Several old rows share this normalised question: retrieve it
+                # afresh so attach joins by ID instead of guessing among them.
+                if "ambiguous" not in str(error):
+                    raise
+                found = None
+                counts[f"{split}_ambiguous"] = counts.get(f"{split}_ambiguous", 0) + 1
             if found is None:
                 pending.append(row)
                 continue

@@ -250,6 +250,11 @@ class RetrievalIndex:
             return value, "source_id"
         values = self.by_question.get(norm, [])
         if len(values) > 1:
+            # Duplicate questions across sources are harmless when every
+            # candidate carries the same ordered evidence.
+            rankings = {json.dumps(retrieve_documents(v, 10 ** 6, {}), ensure_ascii=False) for v in values}
+            if len(rankings) == 1 and retrieve_documents(values[0], 10 ** 6, {}):
+                return values[0], "normalized_question"
             raise ValueError(f"ambiguous question-based retrieval join: {row['id']}")
         return (values[0], "normalized_question") if values else (None, None)
 

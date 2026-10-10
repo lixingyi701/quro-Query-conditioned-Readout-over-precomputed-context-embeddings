@@ -139,6 +139,13 @@ class PublicQATests(unittest.TestCase):
         index = prep.RetrievalIndex([self.write("r2.jsonl", [{"id": "x", "query": "right"}, {"id": "y", "query": "right?"}])])
         with self.assertRaisesRegex(ValueError, "ambiguous"):
             index.get(row)
+        same = [{"id": "x", "query": "right", "doc_ids": ["d1", "d2"]},
+                {"id": "y", "query": "right?", "doc_ids": ["d1", "d2"]}]
+        index = prep.RetrievalIndex([self.write("r3.jsonl", same)])
+        self.assertEqual(index.get(row)[1], "normalized_question")
+        index = prep.RetrievalIndex([self.write("r4.jsonl", [same[0], {**same[1], "doc_ids": ["d2", "d1"]}])])
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            index.get(row)
 
     def test_duplicate_references_preserve_ranks_and_text_id_conflicts_are_rejected(self):
         repeated_corpus = {}

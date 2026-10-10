@@ -1,0 +1,94 @@
+{
+  "version": "0.1.0",
+  "tag": "PISCO",
+  "data_order_provenance": null,
+  "evaluation_protocol": {
+    "cache_manifest_sha256": "9889cc1e97de1459ab902ed23f5114e5dbf14bd7b333bbbc7bf53dd46983cae3",
+    "generator_path": "/data02/quro/models/pisco-mistral",
+    "max_docs": 10,
+    "max_query_len": 256,
+    "gen_max_new_tokens": 128
+  },
+  "readout": "pisco_direct",
+  "output_query_mode": "xattn",
+  "cosine_prior": false,
+  "arm": "P",
+  "query_representation": "shared_current",
+  "query_encoder_kind": "generator",
+  "projector_query_mode": null,
+  "projector_uses_query": false,
+  "parameters": {
+    "readout": 0,
+    "budget_selector": 0,
+    "query_encoder": 0,
+    "generator_lora": 0,
+    "total": 0,
+    "query_representation": "shared_current"
+  },
+  "projector_hidden": null,
+  "projector_conditioning": null,
+  "projector_cross_document": null,
+  "projector_attention_dim": null,
+  "projector_heads": null,
+  "projector_fusion": null,
+  "projector_gamma_frozen": false,
+  "support_head": false,
+  "support_head_input": "hidden",
+  "support_loss_weight": 0.0,
+  "support_warmup_steps": 100,
+  "support_visibility_policy": "visible",
+  "budget_policy": "configured",
+  "max_query_len": 256,
+  "query_adapter_hash": null,
+  "kd_weight": 0.0,
+  "teacher_logits": null,
+  "readout_output_mode": "full",
+  "out_proj_init": null,
+  "generator_lora_init": "frozen",
+  "train_decoder_input_mode": "D0",
+  "query_text_dropout": 0.0,
+  "offline_m": 8,
+  "offline_compressor": "pisco-mistral:rate16",
+  "offline_compr_rate": 16,
+  "metrics": {
+    "hotpot_dev|D0|B=80": {
+      "substring": 0.427,
+      "em": 0.01,
+      "f1": 0.1053876974234612,
+      "n": 2000,
+      "by_source": {
+        "hotpot_dev": {
+          "substring": 0.427,
+          "em": 0.01,
+          "f1": 0.1053876974234612,
+          "n": 2000
+        }
+      },
+      "by_hop_type": {
+        "bridge": {
+          "substring": 0.35511713933415534,
+          "em": 0.011097410604192354,
+          "f1": 0.10328073469205293,
+          "n": 1622
+        },
+        "comparison": {
+          "substring": 0.7354497354497355,
+          "em": 0.005291005291005291,
+          "f1": 0.11442868565188476,
+          "n": 378
+        }
+      },
+      "constant_baseline_em": 0.0285,
+      "constant_baseline_f1": 0.0285,
+      "constant_baseline_substring": 0.0295,
+      "constant_baseline_answer": "yes",
+      "em_above_constant": -0.018500000000000003,
+      "source_tokens": 2500035,
+      "readout_tokens": 160000,
+      "decoder_input_tokens": 311764,
+      "mean_decoder_input_tokens": 155.882,
+      "query_feature_truncation_fraction": 0.0,
+      "xi_eff": 15.62521875
+    }
+  }
+}

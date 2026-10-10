@@ -1,0 +1,101 @@
+{
+  "version": "0.1.0",
+  "tag": "old_SQ",
+  "data_order_provenance": null,
+  "evaluation_protocol": {
+    "cache_manifest_sha256": "9889cc1e97de1459ab902ed23f5114e5dbf14bd7b333bbbc7bf53dd46983cae3",
+    "generator_path": "/data02/quro/models/pisco-mistral",
+    "max_docs": 10,
+    "max_query_len": 256,
+    "gen_max_new_tokens": 128
+  },
+  "readout": "shared_projector",
+  "output_query_mode": "xattn",
+  "cosine_prior": false,
+  "arm": "SQ",
+  "query_representation": "shared_current",
+  "query_encoder_kind": "generator",
+  "projector_query_mode": "conditioned",
+  "projector_uses_query": true,
+  "parameters": {
+    "readout": 37782016,
+    "budget_selector": 0,
+    "query_encoder": 0,
+    "generator_lora": 0,
+    "total": 37782016,
+    "query_representation": "shared_current"
+  },
+  "projector_hidden": 512,
+  "projector_conditioning": "cross_attention",
+  "projector_cross_document": false,
+  "projector_attention_dim": 256,
+  "projector_heads": 8,
+  "projector_fusion": "none",
+  "projector_gamma_frozen": false,
+  "support_head": false,
+  "support_head_input": "hidden",
+  "support_loss_weight": 0.0,
+  "support_warmup_steps": 100,
+  "support_visibility_policy": "visible",
+  "budget_policy": "all_cached",
+  "max_query_len": 256,
+  "query_adapter_hash": null,
+  "kd_weight": 0.0,
+  "teacher_logits": null,
+  "readout_output_mode": "full",
+  "out_proj_init": null,
+  "generator_lora_init": "frozen",
+  "train_decoder_input_mode": "D0",
+  "query_text_dropout": 0.0,
+  "offline_m": 8,
+  "offline_compressor": "pisco-mistral:rate16",
+  "offline_compr_rate": 16,
+  "metrics": {
+    "hotpot_dev|D0|B=full": {
+      "substring": 0.3365,
+      "em": 0.3095,
+      "f1": 0.4155323229466606,
+      "n": 2000,
+      "by_source": {
+        "hotpot_dev": {
+          "substring": 0.3365,
+          "em": 0.3095,
+          "f1": 0.4155323229466606,
+          "n": 2000
+        }
+      },
+      "by_hop_type": {
+        "bridge": {
+          "substring": 0.27435265104808876,
+          "em": 0.2466091245376079,
+          "f1": 0.3555433003667753,
+          "n": 1622
+        },
+        "comparison": {
+          "substring": 0.6031746031746031,
+          "em": 0.5793650793650794,
+          "f1": 0.6729455362391871,
+          "n": 378
+        }
+      },
+      "fusion_h_rms": 3.6561211515758063,
+      "fusion_b_rms": 1.2105893047783587,
+      "fusion_gamma_rms": 0.0,
+      "fusion_product_rms": 0.0,
+      "fusion_update_rms": 0.0,
+      "fusion_product_over_b_rms": 0.0,
+      "fusion_update_over_b_rms": 0.0,
+      "constant_baseline_em": 0.0285,
+      "constant_baseline_f1": 0.0285,
+      "constant_baseline_substring": 0.0295,
+      "constant_baseline_answer": "yes",
+      "em_above_constant": 0.28099999999999997,
+      "source_tokens": 2500035,
+      "readout_tokens": 160000,
+      "decoder_input_tokens": 311764,
+      "mean_decoder_input_tokens": 155.882,
+      "query_feature_truncation_fraction": 0.0,
+      "xi_eff": 15.62521875
+    }
+  }
+}

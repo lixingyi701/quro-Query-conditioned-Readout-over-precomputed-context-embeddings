@@ -1,0 +1,134 @@
+{
+  "version": "0.1.0",
+  "tag": "S0",
+  "data_order_provenance": {
+    "seed": 42,
+    "data_order_seed": 42,
+    "train_sha256": "b775d0b5a287a976ace72b8caa94a234e1221bd7af31b16d95b4533933c2481e",
+    "cache_manifest_sha256": "c35eee02c254b4b9e866889ec4429ccba26a6c7c4fa16c76258de81d42a9ab92",
+    "protocol": {
+      "steps": 9000,
+      "batch_size": 2,
+      "grad_accum": 8,
+      "lr": 5e-05,
+      "lr_schedule": "linear",
+      "warmup_ratio": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0,
+      "num_workers": 4,
+      "eval_every": 500,
+      "eval_every_samples": 500,
+      "select_metric": "em",
+      "gen_max_new_tokens": 128,
+      "prefer_teacher_output": false,
+      "residual_weight": 0.0
+    },
+    "data_limits": {
+      "max_docs": 5,
+      "max_query_len": 256,
+      "max_answer_len": 128
+    },
+    "generator_path": "/data02/quro/models/pisco-mistral",
+    "fresh_start": true,
+    "completed_steps": 5000,
+    "microbatches": 40000,
+    "examples": 80000,
+    "order_sha256": "d8159664a6e634bf3d24a572fe808f94e2df345dce2c6adfbd75f1abc373206e"
+  },
+  "evaluation_protocol": {
+    "cache_manifest_sha256": "9889cc1e97de1459ab902ed23f5114e5dbf14bd7b333bbbc7bf53dd46983cae3",
+    "generator_path": "/data02/quro/models/pisco-mistral",
+    "max_docs": 10,
+    "max_query_len": 256,
+    "gen_max_new_tokens": 128
+  },
+  "readout": "shared_projector",
+  "output_query_mode": "xattn",
+  "cosine_prior": false,
+  "arm": "S0",
+  "query_representation": "shared_current",
+  "query_encoder_kind": "generator",
+  "projector_query_mode": "none",
+  "projector_uses_query": false,
+  "parameters": {
+    "readout": 33587712,
+    "budget_selector": 0,
+    "query_encoder": 0,
+    "generator_lora": 0,
+    "total": 33587712,
+    "query_representation": "shared_current"
+  },
+  "projector_hidden": 512,
+  "projector_conditioning": "cross_attention",
+  "projector_cross_document": false,
+  "projector_attention_dim": 256,
+  "projector_heads": 8,
+  "projector_fusion": "none",
+  "projector_gamma_frozen": false,
+  "support_head": false,
+  "support_head_input": "hidden",
+  "support_loss_weight": 0.0,
+  "support_warmup_steps": 100,
+  "support_visibility_policy": "visible",
+  "budget_policy": "all_cached",
+  "max_query_len": 256,
+  "query_adapter_hash": null,
+  "kd_weight": 0.0,
+  "teacher_logits": null,
+  "readout_output_mode": "full",
+  "out_proj_init": null,
+  "generator_lora_init": "frozen",
+  "train_decoder_input_mode": "D0",
+  "query_text_dropout": 0.0,
+  "offline_m": 8,
+  "offline_compressor": "pisco-mistral:rate16",
+  "offline_compr_rate": 16,
+  "metrics": {
+    "hotpot_dev|D0|B=full": {
+      "substring": 0.347,
+      "em": 0.328,
+      "f1": 0.4392430911194062,
+      "n": 2000,
+      "by_source": {
+        "hotpot_dev": {
+          "substring": 0.347,
+          "em": 0.328,
+          "f1": 0.4392430911194062,
+          "n": 2000
+        }
+      },
+      "by_hop_type": {
+        "bridge": {
+          "substring": 0.2872996300863132,
+          "em": 0.2681874229346486,
+          "f1": 0.3859420361115797,
+          "n": 1622
+        },
+        "comparison": {
+          "substring": 0.6031746031746031,
+          "em": 0.5846560846560847,
+          "f1": 0.6679582001741566,
+          "n": 378
+        }
+      },
+      "fusion_h_rms": 5.024633848600313,
+      "fusion_b_rms": 0.0,
+      "fusion_gamma_rms": 0.0,
+      "fusion_product_rms": 0.0,
+      "fusion_update_rms": 0.0,
+      "fusion_product_over_b_rms": null,
+      "fusion_update_over_b_rms": null,
+      "constant_baseline_em": 0.0285,
+      "constant_baseline_f1": 0.0285,
+      "constant_baseline_substring": 0.0295,
+      "constant_baseline_answer": "yes",
+      "em_above_constant": 0.2995,
+      "source_tokens": 2500035,
+      "readout_tokens": 160000,
+      "decoder_input_tokens": 311764,
+      "mean_decoder_input_tokens": 155.882,
+      "query_feature_truncation_fraction": 0.0,
+      "xi_eff": 15.62521875
+    }
+  }
+}
